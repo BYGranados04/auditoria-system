@@ -9,13 +9,13 @@ import signal
 import socket
 import subprocess
 import time
-import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import psutil
 
+from app.core.events import SecurityEvent
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "data"
@@ -133,15 +133,9 @@ class ContinuousAgent:
             if not conn.laddr:
                 continue
 
-            protocol = (
-                "tcp"
-                if conn.type == socket.SOCK_STREAM
-                else "udp"
-            )
+            protocol = "tcp" if conn.type == socket.SOCK_STREAM else "udp"
 
-            ports.add(
-                f"{protocol}:{conn.laddr.ip}:{conn.laddr.port}"
-            )
+            ports.add(f"{protocol}:{conn.laddr.ip}:{conn.laddr.port}")
 
         return sorted(ports)
 
@@ -171,9 +165,7 @@ class ContinuousAgent:
         return sorted(set(services))
 
     def _firewall(self) -> dict[str, Any]:
-        rc, stdout, stderr = self._run(
-            ["ufw", "status", "verbose"]
-        )
+        rc, stdout, stderr = self._run(["ufw", "status", "verbose"])
 
         raw = stdout if stdout else stderr
 
@@ -185,14 +177,11 @@ class ContinuousAgent:
     def snapshot(self) -> dict[str, Any]:
         return {
             "hostname": self.hostname,
-            "captured_at": datetime.now(timezone.utc).isoformat(),
+            "captured_at": datetime.now(UTC).isoformat(),
             "listening_ports": self._listening_ports(),
             "users": self._users(),
             "running_services": self._running_services(),
-            "watched_files": {
-                path: self._hash_path(path)
-                for path in WATCHED_PATHS
-            },
+            "watched_files": {path: self._hash_path(path) for path in WATCHED_PATHS},
             "firewall": self._firewall(),
         }
 
@@ -235,17 +224,17 @@ class ContinuousAgent:
         description: str,
         evidence: dict[str, Any],
     ) -> None:
-        event = {
-            "event_id": str(uuid.uuid4()),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "hostname": self.hostname,
-            "source": "continuous-agent",
-            "category": category,
-            "event_type": event_type,
-            "severity": severity,
-            "description": description,
-            "evidence": evidence,
-        }
+        event_model = SecurityEvent(
+            hostname=self.hostname,
+            source="continuous-agent",
+            category=category,
+            event_type=event_type,
+            severity=severity,
+            description=description,
+            evidence=evidence,
+        )
+
+        event = event_model.model_dump(mode="json")
 
         with EVENTS_FILE.open("a") as file:
             file.write(
@@ -270,12 +259,8 @@ class ContinuousAgent:
         previous: dict[str, Any],
         current: dict[str, Any],
     ) -> None:
-        previous_ports = set(
-            previous.get("listening_ports", [])
-        )
-        current_ports = set(
-            current.get("listening_ports", [])
-        )
+        previous_ports = set(previous.get("listening_ports", []))
+        current_ports = set(current.get("listening_ports", []))
 
         for port in sorted(current_ports - previous_ports):
             self.emit(
@@ -331,9 +316,7 @@ class ContinuousAgent:
                     category="identity",
                     event_type="USER_MODIFIED",
                     severity="medium",
-                    description=(
-                        f"Cambiaron atributos del usuario: {username}"
-                    ),
+                    description=(f"Cambiaron atributos del usuario: {username}"),
                     evidence={
                         "username": username,
                         "before": previous_users[username],
@@ -341,36 +324,24 @@ class ContinuousAgent:
                     },
                 )
 
-        previous_services = set(
-            previous.get("running_services", [])
-        )
-        current_services = set(
-            current.get("running_services", [])
-        )
+        previous_services = set(previous.get("running_services", []))
+        current_services = set(current.get("running_services", []))
 
-        for service in sorted(
-            current_services - previous_services
-        ):
+        for service in sorted(current_services - previous_services):
             self.emit(
                 category="service",
                 event_type="SERVICE_STARTED",
                 severity="low",
-                description=(
-                    f"Se inició un servicio: {service}"
-                ),
+                description=(f"Se inició un servicio: {service}"),
                 evidence={"service": service},
             )
 
-        for service in sorted(
-            previous_services - current_services
-        ):
+        for service in sorted(previous_services - current_services):
             self.emit(
                 category="service",
                 event_type="SERVICE_STOPPED",
                 severity="low",
-                description=(
-                    f"Se detuvo un servicio: {service}"
-                ),
+                description=(f"Se detuvo un servicio: {service}"),
                 evidence={"service": service},
             )
 
@@ -399,19 +370,13 @@ class ContinuousAgent:
                 continue
 
             if previous_hash != current_hash:
-                severity = (
-                    "high"
-                    if path in high_severity_paths
-                    else "medium"
-                )
+                severity = "high" if path in high_severity_paths else "medium"
 
                 self.emit(
                     category="integrity",
                     event_type="CRITICAL_FILE_CHANGED",
                     severity=severity,
-                    description=(
-                        f"Se detectó un cambio en {path}"
-                    ),
+                    description=(f"Se detectó un cambio en {path}"),
                     evidence={
                         "path": path,
                         "previous_hash": previous_hash,
@@ -428,10 +393,7 @@ class ContinuousAgent:
             {},
         )
 
-        if (
-            previous_firewall.get("active")
-            and not current_firewall.get("active")
-        ):
+        if previous_firewall.get("active") and not current_firewall.get("active"):
             self.emit(
                 category="firewall",
                 event_type="FIREWALL_DISABLED",
@@ -443,22 +405,15 @@ class ContinuousAgent:
                 },
             )
 
-        elif (
-            previous_firewall.get("digest")
-            != current_firewall.get("digest")
-        ):
+        elif previous_firewall.get("digest") != current_firewall.get("digest"):
             self.emit(
                 category="firewall",
                 event_type="FIREWALL_CHANGED",
                 severity="medium",
                 description="La configuración efectiva de UFW cambió.",
                 evidence={
-                    "previous_digest": previous_firewall.get(
-                        "digest"
-                    ),
-                    "current_digest": current_firewall.get(
-                        "digest"
-                    ),
+                    "previous_digest": previous_firewall.get("digest"),
+                    "current_digest": current_firewall.get("digest"),
                 },
             )
 
@@ -470,9 +425,7 @@ class ContinuousAgent:
             category="agent",
             event_type="BASELINE_CREATED",
             severity="low",
-            description=(
-                "Se creó la línea base inicial del servidor."
-            ),
+            description=("Se creó la línea base inicial del servidor."),
             evidence={
                 "state_file": str(STATE_FILE),
             },
@@ -559,9 +512,7 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    agent = ContinuousAgent(
-        interval=max(args.interval, 1)
-    )
+    agent = ContinuousAgent(interval=max(args.interval, 1))
 
     signal.signal(signal.SIGTERM, agent.stop)
     signal.signal(signal.SIGINT, agent.stop)

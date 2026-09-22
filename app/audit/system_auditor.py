@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import platform
 import pwd
 import socket
@@ -142,7 +141,9 @@ class SystemAuditor:
                     title="Firewall UFW no activo",
                     severity="high",
                     description="No se detectó UFW en estado activo.",
-                    recommendation="Habilitar UFW y definir únicamente las reglas necesarias.",
+                    recommendation=(
+                        "Habilitar UFW y definir únicamente las reglas necesarias."
+                    ),
                 )
             )
 
@@ -221,9 +222,7 @@ class SystemAuditor:
         }
 
     def _pending_updates(self) -> dict[str, Any]:
-        rc, stdout, stderr = self._run(
-            ["apt", "list", "--upgradable"]
-        )
+        rc, stdout, stderr = self._run(["apt", "list", "--upgradable"])
 
         if rc != 0:
             return {
@@ -247,7 +246,9 @@ class SystemAuditor:
                     code="PENDING_UPDATES",
                     title="Actualizaciones pendientes",
                     severity="medium",
-                    description=f"Se detectaron {len(packages)} paquetes actualizables.",
+                    description=(
+                        f"Se detectaron {len(packages)} paquetes actualizables."
+                    ),
                     recommendation="Revisar y aplicar las actualizaciones disponibles.",
                 )
             )
@@ -301,18 +302,9 @@ class SystemAuditor:
         result["findings"] = [asdict(item) for item in self.findings]
         result["summary"] = {
             "total_findings": len(self.findings),
-            "high": sum(
-                finding.severity == "high"
-                for finding in self.findings
-            ),
-            "medium": sum(
-                finding.severity == "medium"
-                for finding in self.findings
-            ),
-            "low": sum(
-                finding.severity == "low"
-                for finding in self.findings
-            ),
+            "high": sum(finding.severity == "high" for finding in self.findings),
+            "medium": sum(finding.severity == "medium" for finding in self.findings),
+            "low": sum(finding.severity == "low" for finding in self.findings),
         }
 
         return result

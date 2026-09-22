@@ -11,3 +11,11 @@ data/*.db
 logs/*.jsonl
 data/*.json
 data/*.jsonl
+
+# Python build / tooling
+*.egg-info/
+build/
+dist/
+.coverage
+htmlcov/
+.ruff_cache/
