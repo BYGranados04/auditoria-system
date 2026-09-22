@@ -6,3 +6,8 @@ __pycache__/
 .env
 data/*.db
 .pytest_cache/
+
+# Runtime state
+logs/*.jsonl
+data/*.json
+data/*.jsonl
