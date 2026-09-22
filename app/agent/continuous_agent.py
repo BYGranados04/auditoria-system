@@ -15,14 +15,8 @@ from typing import Any
 
 import psutil
 
+from app.core.config import AgentSettings, load_agent_settings
 from app.core.events import SecurityEvent
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DATA_DIR = PROJECT_ROOT / "data"
-LOG_DIR = PROJECT_ROOT / "logs"
-
-STATE_FILE = DATA_DIR / "agent_state.json"
-EVENTS_FILE = LOG_DIR / "events.jsonl"
 
 WATCHED_PATHS = [
     "/etc/ssh/sshd_config",
@@ -37,13 +31,29 @@ WATCHED_PATHS = [
 
 
 class ContinuousAgent:
-    def __init__(self, interval: int = 10) -> None:
-        self.interval = interval
+    def __init__(
+        self,
+        interval: int | None = None,
+        settings: AgentSettings | None = None,
+    ) -> None:
+        self.settings = settings or load_agent_settings()
+        self.interval = (
+            interval
+            if interval is not None and interval > 0
+            else self.settings.interval
+        )
         self.running = True
         self.hostname = platform.node()
 
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
+    def _ensure_runtime_dirs(self) -> None:
+        self.settings.state_dir.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+        self.settings.log_dir.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
 
     @staticmethod
     def _run(command: list[str]) -> tuple[int, str, str]:
@@ -203,15 +213,18 @@ class ContinuousAgent:
         temporary.replace(path)
 
     def save_state(self, state: dict[str, Any]) -> None:
-        self._write_json_atomic(STATE_FILE, state)
+        self._ensure_runtime_dirs()
+        self._write_json_atomic(
+            self.settings.state_file,
+            state,
+        )
 
-    @staticmethod
-    def load_state() -> dict[str, Any] | None:
-        if not STATE_FILE.exists():
+    def load_state(self) -> dict[str, Any] | None:
+        if not self.settings.state_file.exists():
             return None
 
         try:
-            return json.loads(STATE_FILE.read_text())
+            return json.loads(self.settings.state_file.read_text())
         except (json.JSONDecodeError, OSError):
             return None
 
@@ -236,7 +249,9 @@ class ContinuousAgent:
 
         event = event_model.model_dump(mode="json")
 
-        with EVENTS_FILE.open("a") as file:
+        self._ensure_runtime_dirs()
+
+        with self.settings.events_file.open("a") as file:
             file.write(
                 json.dumps(
                     event,
@@ -427,7 +442,7 @@ class ContinuousAgent:
             severity="low",
             description=("Se creó la línea base inicial del servidor."),
             evidence={
-                "state_file": str(STATE_FILE),
+                "state_file": str(self.settings.state_file),
             },
         )
 
@@ -494,8 +509,10 @@ def main() -> None:
     parser.add_argument(
         "--interval",
         type=int,
-        default=10,
-        help="Intervalo de monitoreo en segundos",
+        default=None,
+        help=(
+            "Intervalo de monitoreo en segundos. Si se omite, usa AUDITORIA_INTERVAL."
+        ),
     )
 
     parser.add_argument(
@@ -512,13 +529,18 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    agent = ContinuousAgent(interval=max(args.interval, 1))
+    settings = load_agent_settings()
+
+    agent = ContinuousAgent(
+        interval=args.interval,
+        settings=settings,
+    )
 
     signal.signal(signal.SIGTERM, agent.stop)
     signal.signal(signal.SIGINT, agent.stop)
 
-    if args.reset_baseline and STATE_FILE.exists():
-        STATE_FILE.unlink()
+    if args.reset_baseline and agent.settings.state_file.exists():
+        agent.settings.state_file.unlink()
 
     if args.once:
         agent.run_once()
