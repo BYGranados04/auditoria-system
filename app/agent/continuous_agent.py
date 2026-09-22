@@ -184,9 +184,19 @@ class ContinuousAgent:
             "digest": self._sha256_bytes(raw.encode()),
         }
 
+    @staticmethod
+    def _boot_id() -> str | None:
+        try:
+            boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        except OSError:
+            return None
+
+        return boot_id or None
+
     def snapshot(self) -> dict[str, Any]:
         return {
             "hostname": self.hostname,
+            "boot_id": self._boot_id(),
             "captured_at": datetime.now(UTC).isoformat(),
             "listening_ports": self._listening_ports(),
             "users": self._users(),
@@ -456,6 +466,38 @@ class ContinuousAgent:
             return
 
         current = self.snapshot()
+
+        if "boot_id" not in previous:
+            self.save_state(current)
+            self.emit(
+                category="agent",
+                event_type="BASELINE_MIGRATED",
+                severity="low",
+                description=(
+                    "La línea base fue actualizada para "
+                    "registrar el identificador de arranque."
+                ),
+                evidence={},
+            )
+            return
+
+        previous_boot_id = previous.get("boot_id")
+        current_boot_id = current.get("boot_id")
+
+        if previous_boot_id and current_boot_id and previous_boot_id != current_boot_id:
+            self.emit(
+                category="system",
+                event_type="SYSTEM_REBOOT_DETECTED",
+                severity="low",
+                description="Se detectó un nuevo arranque del servidor.",
+                evidence={
+                    "previous_boot_id": previous_boot_id,
+                    "current_boot_id": current_boot_id,
+                },
+            )
+            self.save_state(current)
+            return
+
         self.compare(previous, current)
         self.save_state(current)
 
