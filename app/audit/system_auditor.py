@@ -193,14 +193,23 @@ class SystemAuditor:
                 )
             )
 
-        if config.get("permitrootlogin") == "yes":
+        root_login = config.get("permitrootlogin")
+
+        if root_login and root_login != "no":
             self.findings.append(
                 Finding(
                     code="SSH_ROOT_LOGIN",
-                    title="Inicio de sesión SSH directo como root",
-                    severity="high",
-                    description="SSH permite iniciar sesión directamente como root.",
-                    recommendation="Deshabilitar PermitRootLogin directo.",
+                    title="Inicio de sesión SSH directo como root permitido",
+                    severity="medium",
+                    description=(
+                        f"PermitRootLogin tiene el valor '{root_login}'. "
+                        "Todavía puede existir acceso SSH directo como root "
+                        "mediante métodos autorizados."
+                    ),
+                    recommendation=(
+                        "Configurar PermitRootLogin no cuando la administración "
+                        "mediante un usuario con sudo esté verificada."
+                    ),
                 )
             )
 
