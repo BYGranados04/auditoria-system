@@ -275,8 +275,14 @@ def test_ssh_events_are_correlated_after_persistence(
         limit=20,
     )
 
+    responses = repository.list_events(
+        category="response",
+        limit=20,
+    )
+
     assert len(authentication) == 5
     assert len(detections) == 1
+    assert len(responses) == 1
 
     detection = detections[0]
 
@@ -286,4 +292,77 @@ def test_ssh_events_are_correlated_after_persistence(
     assert detection["evidence"]["distinct_user_count"] == 5
     assert detection["evidence"]["source_ip"] == "192.168.1.50"
 
+    response = responses[0]
+
+    assert response["event_type"] == "RESPONSE_DECISION"
+    assert response["source"] == "response-engine"
+    assert response["severity"] == "low"
+
+    assert response["evidence"]["detection_event_id"] == detection["event_id"]
+    assert response["evidence"]["action"] == "RECOMMEND_BLOCK_IP"
+    assert response["evidence"]["mode"] == "audit_only"
+    assert response["evidence"]["target_ip"] == "192.168.1.50"
+    assert response["evidence"]["executed"] is False
+    assert response["evidence"]["execution_allowed"] is False
+
     assert current["ssh_journal_cursor"] == ("cursor-final")
+
+
+def test_response_decision_preserves_loopback_safeguard(
+    tmp_path,
+) -> None:
+    settings = AgentSettings(
+        interval=1,
+        state_dir=tmp_path / "state",
+        log_dir=tmp_path / "logs",
+        response_mode="automatic",
+        allow_temporary_ip_block=True,
+    )
+
+    agent = ContinuousAgent(
+        interval=1,
+        settings=settings,
+    )
+
+    detection_event = agent.emit(
+        category="detection",
+        event_type="SSH_USER_ENUMERATION_ATTEMPT",
+        severity="high",
+        description="Detección de prueba desde loopback.",
+        evidence={
+            "source_ip": "127.0.0.1",
+        },
+        timestamp=datetime(
+            2026,
+            9,
+            23,
+            5,
+            10,
+            tzinfo=UTC,
+        ),
+        source="detection-engine",
+    )
+
+    response_event = agent._emit_response_decision(detection_event)
+
+    assert response_event.category == "response"
+    assert response_event.source == "response-engine"
+    assert response_event.event_type == "RESPONSE_DECISION"
+
+    assert response_event.evidence["action"] == "NO_ACTION"
+    assert response_event.evidence["target_ip"] == "127.0.0.1"
+    assert response_event.evidence["mode"] == "automatic"
+    assert response_event.evidence["executed"] is False
+    assert response_event.evidence["execution_allowed"] is False
+
+    from app.storage.event_repository import EventRepository
+
+    repository = EventRepository(settings.database_file)
+
+    responses = repository.list_events(
+        category="response",
+        limit=10,
+    )
+
+    assert len(responses) == 1
+    assert responses[0]["evidence"]["action"] == "NO_ACTION"

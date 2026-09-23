@@ -19,6 +19,8 @@ from app.core.config import AgentSettings, load_agent_settings
 from app.core.events import SecurityEvent
 from app.detection.ssh_collector import SSHJournalCollector
 from app.detection.ssh_correlation import SSHCorrelationEngine
+from app.response.engine import ResponsePolicyEngine
+from app.response.policy import ResponsePolicy
 from app.storage.event_repository import EventRepository
 
 WATCHED_PATHS = [
@@ -48,6 +50,14 @@ class ContinuousAgent:
         self.running = True
         self.hostname = platform.node()
         self.ssh_collector = SSHJournalCollector()
+        self.response_engine = ResponsePolicyEngine(
+            ResponsePolicy(
+                mode=self.settings.response_mode,
+                trusted_admin_ips=set(self.settings.trusted_admin_ips),
+                allow_temporary_ip_block=(self.settings.allow_temporary_ip_block),
+                temporary_block_seconds=(self.settings.temporary_block_seconds),
+            )
+        )
 
     def _ensure_runtime_dirs(self) -> None:
         self.settings.state_dir.mkdir(
@@ -301,6 +311,23 @@ class ContinuousAgent:
         if cursor is not None:
             state["ssh_journal_cursor"] = cursor
 
+    def _emit_response_decision(
+        self,
+        detection_event: SecurityEvent,
+    ) -> SecurityEvent:
+        decision = self.response_engine.evaluate(detection_event)
+
+        evidence = decision.model_dump(mode="json")
+
+        return self.emit(
+            category="response",
+            event_type="RESPONSE_DECISION",
+            severity="low",
+            description=("El motor de respuesta evaluó una detección de seguridad."),
+            evidence=evidence,
+            source="response-engine",
+        )
+
     def _collect_ssh_events(
         self,
         previous: dict[str, Any],
@@ -360,7 +387,7 @@ class ContinuousAgent:
             detections = correlation.analyze(event_model)
 
             for detection in detections:
-                self.emit(
+                detection_event = self.emit(
                     category="detection",
                     event_type=detection.event_type,
                     severity=detection.severity,
@@ -369,6 +396,8 @@ class ContinuousAgent:
                     timestamp=record.timestamp,
                     source="detection-engine",
                 )
+
+                self._emit_response_decision(detection_event)
 
         current["ssh_journal_cursor"] = batch.cursor or cursor
 
