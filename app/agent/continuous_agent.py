@@ -249,8 +249,10 @@ class ContinuousAgent:
         severity: str,
         description: str,
         evidence: dict[str, Any],
+        timestamp: datetime | None = None,
     ) -> None:
         event_model = SecurityEvent(
+            timestamp=timestamp or datetime.now(UTC),
             hostname=self.hostname,
             source="continuous-agent",
             category=category,
