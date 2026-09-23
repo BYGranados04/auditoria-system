@@ -18,6 +18,7 @@ import psutil
 from app.core.config import AgentSettings, load_agent_settings
 from app.core.events import SecurityEvent
 from app.detection.ssh_collector import SSHJournalCollector
+from app.detection.ssh_correlation import SSHCorrelationEngine
 from app.storage.event_repository import EventRepository
 
 WATCHED_PATHS = [
@@ -250,11 +251,12 @@ class ContinuousAgent:
         description: str,
         evidence: dict[str, Any],
         timestamp: datetime | None = None,
-    ) -> None:
+        source: str = "continuous-agent",
+    ) -> SecurityEvent:
         event_model = SecurityEvent(
             timestamp=timestamp or datetime.now(UTC),
             hostname=self.hostname,
-            source="continuous-agent",
+            source=source,
             category=category,
             event_type=event_type,
             severity=severity,
@@ -287,6 +289,8 @@ class ContinuousAgent:
             ),
             flush=True,
         )
+
+        return event_model
 
     def _seed_ssh_cursor(
         self,
@@ -331,8 +335,17 @@ class ContinuousAgent:
             )
             return
 
+        if not batch.records:
+            current["ssh_journal_cursor"] = batch.cursor or cursor
+            return
+
+        repository = EventRepository(self.settings.database_file)
+        repository.initialize()
+
+        correlation = SSHCorrelationEngine(repository)
+
         for record in batch.records:
-            self.emit(
+            event_model = self.emit(
                 category="authentication",
                 event_type=record.event_type,
                 severity=record.severity,
@@ -343,6 +356,19 @@ class ContinuousAgent:
                 },
                 timestamp=record.timestamp,
             )
+
+            detections = correlation.analyze(event_model)
+
+            for detection in detections:
+                self.emit(
+                    category="detection",
+                    event_type=detection.event_type,
+                    severity=detection.severity,
+                    description=detection.description,
+                    evidence=detection.evidence,
+                    timestamp=record.timestamp,
+                    source="detection-engine",
+                )
 
         current["ssh_journal_cursor"] = batch.cursor or cursor
 

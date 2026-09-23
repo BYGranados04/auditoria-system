@@ -91,3 +91,35 @@ def test_emit_preserves_explicit_timestamp(
 
     assert len(events) == 1
     assert events[0]["timestamp"] == "2026-09-23T04:14:27Z"
+
+
+def test_emit_returns_persisted_security_event(
+    tmp_path: Path,
+) -> None:
+    settings = AgentSettings(
+        interval=1,
+        state_dir=tmp_path / "state",
+        log_dir=tmp_path / "logs",
+    )
+
+    agent = ContinuousAgent(
+        interval=1,
+        settings=settings,
+    )
+
+    event = agent.emit(
+        category="detection",
+        event_type="TEST_DETECTION",
+        severity="high",
+        description="Detección de prueba.",
+        evidence={"test": True},
+        source="detection-engine",
+    )
+
+    repository = EventRepository(settings.database_file)
+
+    stored = repository.list_events(limit=1)
+
+    assert str(event.event_id) == stored[0]["event_id"]
+    assert event.source == "detection-engine"
+    assert stored[0]["source"] == "detection-engine"
