@@ -47,3 +47,16 @@ def test_non_positive_interval_uses_default(monkeypatch) -> None:
     settings = load_agent_settings()
 
     assert settings.interval == 10
+
+
+def test_database_file_uses_state_directory(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv(
+        "AUDITORIA_STATE_DIR",
+        "/tmp/auditoria-state",
+    )
+
+    settings = load_agent_settings()
+
+    assert settings.database_file == Path("/tmp/auditoria-state/auditoria.db")
