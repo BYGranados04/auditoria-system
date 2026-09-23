@@ -12,7 +12,7 @@ from app.core.events import SecurityEvent
 
 
 class EventRepository:
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path
@@ -56,6 +56,7 @@ class EventRepository:
 
             migrations = {
                 1: self._migrate_to_v1,
+                2: self._migrate_to_v2,
             }
 
             while current_version < self.SCHEMA_VERSION:
@@ -116,6 +117,84 @@ class EventRepository:
                 ON events ({column})
                 """
             )
+
+    @staticmethod
+    def _migrate_to_v2(
+        connection: sqlite3.Connection,
+    ) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS response_blocks (
+                block_id TEXT PRIMARY KEY,
+                detection_event_id TEXT NOT NULL,
+                response_event_id TEXT NOT NULL,
+                execution_event_id TEXT,
+                hostname TEXT NOT NULL,
+                target_ip TEXT NOT NULL,
+                family TEXT NOT NULL
+                    CHECK (family IN ('ip', 'ip6')),
+                duration_seconds INTEGER NOT NULL
+                    CHECK (
+                        duration_seconds >= 60
+                        AND duration_seconds <= 86400
+                    ),
+                requested_at TEXT NOT NULL,
+                applied_at TEXT,
+                expires_at TEXT NOT NULL,
+                status TEXT NOT NULL
+                    CHECK (
+                        status IN (
+                            'PENDING',
+                            'ACTIVE',
+                            'EXPIRED',
+                            'REMOVED',
+                            'FAILED'
+                        )
+                    ),
+                last_error TEXT,
+                created_at TEXT NOT NULL
+                    DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL
+                    DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+                idx_response_blocks_status
+            ON response_blocks (status)
+            """
+        )
+
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+                idx_response_blocks_expires_at
+            ON response_blocks (expires_at)
+            """
+        )
+
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+                idx_response_blocks_target
+            ON response_blocks (target_ip)
+            """
+        )
+
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS
+                idx_response_blocks_live_target
+            ON response_blocks (
+                hostname,
+                target_ip
+            )
+            WHERE status IN ('PENDING', 'ACTIVE')
+            """
+        )
 
     def add(self, event: SecurityEvent) -> None:
         data = event.model_dump(mode="json")

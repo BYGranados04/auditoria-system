@@ -37,7 +37,7 @@ def test_initializes_database(tmp_path: Path) -> None:
 
     assert repo.database_path.exists()
     assert repo.count() == 0
-    assert repo.schema_version() == 1
+    assert repo.schema_version() == 2
 
 
 def test_persists_event(tmp_path: Path) -> None:
@@ -209,7 +209,7 @@ def test_initialize_is_idempotent(tmp_path: Path) -> None:
     repo.initialize()
     repo.initialize()
 
-    assert repo.schema_version() == 1
+    assert repo.schema_version() == 2
     assert repo.count() == 1
 
 
@@ -270,7 +270,7 @@ def test_migrates_existing_v0_database_without_losing_events(
     repo = EventRepository(database_path)
     repo.initialize()
 
-    assert repo.schema_version() == 1
+    assert repo.schema_version() == 2
     assert repo.count() == 1
 
     events = repo.list_events()
@@ -285,7 +285,7 @@ def test_rejects_database_from_future_schema(
     database_path = tmp_path / "auditoria.db"
 
     with sqlite3.connect(database_path) as connection:
-        connection.execute("PRAGMA user_version = 2")
+        connection.execute("PRAGMA user_version = 3")
 
     repo = EventRepository(database_path)
 
@@ -347,3 +347,184 @@ def test_retention_counts_and_deletes_old_events(
     remaining = repo.list_events()
 
     assert remaining[0]["event_id"] == str(recent_event.event_id)
+
+
+def test_migrates_v1_database_to_v2_without_losing_events(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "auditoria.db"
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE events (
+                event_id TEXT PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                hostname TEXT NOT NULL,
+                source TEXT NOT NULL,
+                category TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                description TEXT NOT NULL,
+                evidence_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+                    DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        connection.execute(
+            """
+            INSERT INTO events (
+                event_id,
+                timestamp,
+                hostname,
+                source,
+                category,
+                event_type,
+                severity,
+                description,
+                evidence_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "event-before-v2",
+                "2026-09-23T07:00:00Z",
+                "auditoria-server",
+                "detection-engine",
+                "detection",
+                "SSH_USER_ENUMERATION_ATTEMPT",
+                "high",
+                "Evento anterior a schema v2",
+                '{"source_ip": "192.168.1.50"}',
+            ),
+        )
+
+        connection.execute("PRAGMA user_version = 1")
+
+    repo = EventRepository(database_path)
+    repo.initialize()
+
+    assert repo.schema_version() == 2
+    assert repo.count() == 1
+
+    events = repo.list_events()
+
+    assert events[0]["event_id"] == "event-before-v2"
+
+    with sqlite3.connect(database_path) as connection:
+        table = connection.execute(
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name = 'response_blocks'
+            """
+        ).fetchone()
+
+        assert table is not None
+
+        columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(response_blocks)")
+        }
+
+        assert {
+            "block_id",
+            "detection_event_id",
+            "response_event_id",
+            "execution_event_id",
+            "hostname",
+            "target_ip",
+            "family",
+            "duration_seconds",
+            "requested_at",
+            "applied_at",
+            "expires_at",
+            "status",
+            "last_error",
+            "created_at",
+            "updated_at",
+        } <= columns
+
+        indexes = {
+            row[1] for row in connection.execute("PRAGMA index_list(response_blocks)")
+        }
+
+        assert "idx_response_blocks_status" in indexes
+        assert "idx_response_blocks_expires_at" in indexes
+        assert "idx_response_blocks_target" in indexes
+        assert "idx_response_blocks_live_target" in indexes
+
+
+def test_v2_prevents_duplicate_live_blocks(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "auditoria.db"
+
+    repo = EventRepository(database_path)
+    repo.initialize()
+
+    with sqlite3.connect(database_path) as connection:
+        values = (
+            "block-1",
+            "detection-1",
+            "response-1",
+            "auditoria-server",
+            "192.168.1.50",
+            "ip",
+            900,
+            "2026-09-23T07:10:00Z",
+            "2026-09-23T07:25:00Z",
+            "ACTIVE",
+        )
+
+        connection.execute(
+            """
+            INSERT INTO response_blocks (
+                block_id,
+                detection_event_id,
+                response_event_id,
+                hostname,
+                target_ip,
+                family,
+                duration_seconds,
+                requested_at,
+                expires_at,
+                status
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            values,
+        )
+
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO response_blocks (
+                    block_id,
+                    detection_event_id,
+                    response_event_id,
+                    hostname,
+                    target_ip,
+                    family,
+                    duration_seconds,
+                    requested_at,
+                    expires_at,
+                    status
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "block-2",
+                    "detection-2",
+                    "response-2",
+                    "auditoria-server",
+                    "192.168.1.50",
+                    "ip",
+                    900,
+                    "2026-09-23T07:11:00Z",
+                    "2026-09-23T07:26:00Z",
+                    "PENDING",
+                ),
+            )
