@@ -234,3 +234,148 @@ def test_does_not_duplicate_recent_detection(
     repo.add(extra)
 
     assert engine.analyze(extra) == []
+
+
+def test_does_not_detect_repeated_preauth_below_threshold(
+    tmp_path: Path,
+) -> None:
+    repo = repository(tmp_path)
+    engine = SSHCorrelationEngine(repo)
+
+    last_event = None
+
+    for index in range(9):
+        last_event = ssh_event(
+            event_type="SSH_PREAUTH_CONNECTION_CLOSED",
+            timestamp=BASE_TIME + timedelta(seconds=index),
+            user="auditor",
+        )
+        repo.add(last_event)
+
+    assert last_event is not None
+    assert engine.analyze(last_event) == []
+
+
+def test_detects_repeated_preauth_activity(
+    tmp_path: Path,
+) -> None:
+    repo = repository(tmp_path)
+    engine = SSHCorrelationEngine(repo)
+
+    last_event = None
+
+    for index in range(10):
+        last_event = ssh_event(
+            event_type="SSH_PREAUTH_CONNECTION_CLOSED",
+            timestamp=BASE_TIME + timedelta(seconds=index),
+            user="auditor",
+        )
+        repo.add(last_event)
+
+    assert last_event is not None
+
+    detections = engine.analyze(last_event)
+
+    assert len(detections) == 1
+
+    detection = detections[0]
+
+    assert detection.event_type == "SSH_REPEATED_PREAUTH_ACTIVITY"
+    assert detection.severity == "medium"
+    assert detection.evidence["attempt_count"] == 10
+    assert detection.evidence["source_ip"] == "192.168.1.50"
+    assert detection.evidence["users"] == ["auditor"]
+
+
+def test_repeated_preauth_separates_source_ips(
+    tmp_path: Path,
+) -> None:
+    repo = repository(tmp_path)
+    engine = SSHCorrelationEngine(repo)
+
+    last_event = None
+
+    for index in range(5):
+        first = ssh_event(
+            event_type="SSH_PREAUTH_CONNECTION_CLOSED",
+            timestamp=BASE_TIME + timedelta(seconds=index),
+            ip="192.168.1.10",
+        )
+        second = ssh_event(
+            event_type="SSH_PREAUTH_CONNECTION_CLOSED",
+            timestamp=BASE_TIME + timedelta(seconds=index),
+            ip="192.168.1.20",
+        )
+
+        repo.add(first)
+        repo.add(second)
+        last_event = second
+
+    assert last_event is not None
+    assert engine.analyze(last_event) == []
+
+
+def test_repeated_preauth_respects_time_window(
+    tmp_path: Path,
+) -> None:
+    repo = repository(tmp_path)
+    engine = SSHCorrelationEngine(repo)
+
+    for index in range(9):
+        repo.add(
+            ssh_event(
+                event_type="SSH_PREAUTH_CONNECTION_CLOSED",
+                timestamp=BASE_TIME + timedelta(seconds=index),
+            )
+        )
+
+    last_event = ssh_event(
+        event_type="SSH_PREAUTH_CONNECTION_CLOSED",
+        timestamp=BASE_TIME + timedelta(seconds=120),
+    )
+    repo.add(last_event)
+
+    assert engine.analyze(last_event) == []
+
+
+def test_does_not_duplicate_recent_preauth_detection(
+    tmp_path: Path,
+) -> None:
+    repo = repository(tmp_path)
+    engine = SSHCorrelationEngine(repo)
+
+    last_event = None
+
+    for index in range(10):
+        last_event = ssh_event(
+            event_type="SSH_PREAUTH_CONNECTION_CLOSED",
+            timestamp=BASE_TIME + timedelta(seconds=index),
+        )
+        repo.add(last_event)
+
+    assert last_event is not None
+
+    first_detection = engine.analyze(last_event)
+
+    assert len(first_detection) == 1
+
+    detection_event = SecurityEvent(
+        timestamp=last_event.timestamp,
+        hostname="server-test",
+        source="detection-engine",
+        category="detection",
+        event_type=first_detection[0].event_type,
+        severity=first_detection[0].severity,
+        description=first_detection[0].description,
+        evidence=first_detection[0].evidence,
+    )
+
+    repo.add(detection_event)
+
+    extra = ssh_event(
+        event_type="SSH_PREAUTH_CONNECTION_CLOSED",
+        timestamp=BASE_TIME + timedelta(seconds=10),
+    )
+    repo.add(extra)
+
+    assert engine.analyze(extra) == []

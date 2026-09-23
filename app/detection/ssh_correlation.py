@@ -19,6 +19,7 @@ class DetectionResult:
 class SSHCorrelationEngine:
     BRUTE_FORCE_THRESHOLD = 10
     USER_ENUMERATION_THRESHOLD = 5
+    PREAUTH_ACTIVITY_THRESHOLD = 10
     WINDOW_SECONDS = 60
 
     def __init__(
@@ -38,6 +39,11 @@ class SSHCorrelationEngine:
 
         if event.event_type == "SSH_INVALID_USER":
             result = self._detect_user_enumeration(event)
+
+            return [result] if result is not None else []
+
+        if event.event_type == "SSH_PREAUTH_CONNECTION_CLOSED":
+            result = self._detect_repeated_preauth(event)
 
             return [result] if result is not None else []
 
@@ -189,6 +195,100 @@ class SSHCorrelationEngine:
                 "distinct_user_count": len(users),
                 "users": sorted(users),
                 "window_seconds": self.WINDOW_SECONDS,
+                "first_seen": attempts[-1]["timestamp"],
+                "last_seen": attempts[0]["timestamp"],
+                "triggering_event_id": str(event.event_id),
+            },
+        )
+
+    def _detect_repeated_preauth(
+        self,
+        event: SecurityEvent,
+    ) -> DetectionResult | None:
+        attempts = self._authentication_events(
+            event=event,
+            event_type="SSH_PREAUTH_CONNECTION_CLOSED",
+        )
+
+        if len(attempts) < self.PREAUTH_ACTIVITY_THRESHOLD:
+            return None
+
+        if self._recent_detection_exists(
+            event=event,
+            event_type="SSH_REPEATED_PREAUTH_ACTIVITY",
+        ):
+            return None
+
+        source_ip = str(event.evidence["ip"])
+
+        users = sorted(
+            {
+                str(item["evidence"].get("user"))
+                for item in attempts
+                if item["evidence"].get("user")
+            }
+        )
+
+        return DetectionResult(
+            event_type="SSH_REPEATED_PREAUTH_ACTIVITY",
+            severity="medium",
+            description=(
+                "Se detectaron múltiples conexiones SSH "
+                "cerradas durante la preautenticación "
+                "desde un mismo origen."
+            ),
+            evidence={
+                "source_ip": source_ip,
+                "attempt_count": len(attempts),
+                "window_seconds": self.WINDOW_SECONDS,
+                "users": users,
+                "first_seen": attempts[-1]["timestamp"],
+                "last_seen": attempts[0]["timestamp"],
+                "triggering_event_id": str(event.event_id),
+            },
+        )
+
+    def _detect_repeated_preauth(
+        self,
+        event: SecurityEvent,
+    ) -> DetectionResult | None:
+        attempts = self._authentication_events(
+            event=event,
+            event_type="SSH_PREAUTH_CONNECTION_CLOSED",
+        )
+
+        if len(attempts) < self.PREAUTH_ACTIVITY_THRESHOLD:
+            return None
+
+        if self._recent_detection_exists(
+            event=event,
+            event_type="SSH_REPEATED_PREAUTH_ACTIVITY",
+        ):
+            return None
+
+        source_ip = str(event.evidence["ip"])
+
+        users = sorted(
+            {
+                str(item["evidence"].get("user"))
+                for item in attempts
+                if item["evidence"].get("user")
+            }
+        )
+
+        return DetectionResult(
+            event_type="SSH_REPEATED_PREAUTH_ACTIVITY",
+            severity="medium",
+            description=(
+                "Se detectaron múltiples conexiones SSH "
+                "cerradas durante la preautenticación "
+                "desde un mismo origen."
+            ),
+            evidence={
+                "source_ip": source_ip,
+                "attempt_count": len(attempts),
+                "window_seconds": self.WINDOW_SECONDS,
+                "users": users,
                 "first_seen": attempts[-1]["timestamp"],
                 "last_seen": attempts[0]["timestamp"],
                 "triggering_event_id": str(event.event_id),
