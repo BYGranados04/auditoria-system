@@ -109,6 +109,40 @@ class EventRepository:
                 ),
             )
 
+    def statistics(self) -> dict[str, Any]:
+        with self._connection() as connection:
+            total = connection.execute(
+                "SELECT COUNT(*) AS total FROM events"
+            ).fetchone()["total"]
+
+            severity_rows = connection.execute(
+                """
+                SELECT severity, COUNT(*) AS total
+                FROM events
+                GROUP BY severity
+                ORDER BY severity
+                """
+            ).fetchall()
+
+            type_rows = connection.execute(
+                """
+                SELECT event_type, COUNT(*) AS total
+                FROM events
+                GROUP BY event_type
+                ORDER BY total DESC, event_type
+                """
+            ).fetchall()
+
+        return {
+            "total": int(total),
+            "by_severity": {
+                row["severity"]: int(row["total"]) for row in severity_rows
+            },
+            "by_event_type": {
+                row["event_type"]: int(row["total"]) for row in type_rows
+            },
+        }
+
     def count(self) -> int:
         with self._connection() as connection:
             row = connection.execute("SELECT COUNT(*) AS total FROM events").fetchone()

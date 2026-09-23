@@ -101,3 +101,34 @@ def test_limits_results(tmp_path: Path) -> None:
 
     assert len(events) == 2
     assert repo.count() == 5
+
+
+def test_statistics_groups_events(tmp_path: Path) -> None:
+    repo = repository(tmp_path)
+
+    repo.add(
+        make_event(
+            severity="high",
+            event_type="SSH_ATTACK",
+        )
+    )
+    repo.add(
+        make_event(
+            severity="high",
+            event_type="SSH_ATTACK",
+        )
+    )
+    repo.add(
+        make_event(
+            severity="low",
+            event_type="PORT_CLOSED",
+        )
+    )
+
+    stats = repo.statistics()
+
+    assert stats["total"] == 3
+    assert stats["by_severity"]["high"] == 2
+    assert stats["by_severity"]["low"] == 1
+    assert stats["by_event_type"]["SSH_ATTACK"] == 2
+    assert stats["by_event_type"]["PORT_CLOSED"] == 1
