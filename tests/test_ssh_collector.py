@@ -148,3 +148,31 @@ def test_read_after_returns_records_and_latest_cursor(
     assert len(batch.records) == 1
     assert batch.records[0].event_type == "SSH_AUTH_FAILURE"
     assert batch.cursor == "cursor-2"
+
+
+def test_parses_preauth_connection_closed() -> None:
+    record = SSHJournalCollector.parse_entry(
+        entry(
+            "Connection closed by authenticating user "
+            "auditor 127.0.0.1 port 32824 [preauth]"
+        )
+    )
+
+    assert record is not None
+    assert record.event_type == "SSH_PREAUTH_CONNECTION_CLOSED"
+    assert record.severity == "low"
+    assert record.evidence == {
+        "user": "auditor",
+        "ip": "127.0.0.1",
+        "port": "32824",
+    }
+
+
+def test_ignores_invalid_user_connection_closed() -> None:
+    record = SSHJournalCollector.parse_entry(
+        entry(
+            "Connection closed by invalid user admin 192.168.1.50 port 50000 [preauth]"
+        )
+    )
+
+    assert record is None

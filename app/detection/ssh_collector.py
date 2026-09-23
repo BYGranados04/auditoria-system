@@ -48,6 +48,14 @@ class SSHJournalCollector:
         r"(?P<port>\d+)"
     )
 
+    _PREAUTH_CLOSED = re.compile(
+        r"^Connection closed by authenticating user "
+        r"(?P<user>\S+) "
+        r"(?P<ip>\S+) port "
+        r"(?P<port>\d+) "
+        r"\[preauth\]$"
+    )
+
     @staticmethod
     def _run(
         command: list[str],
@@ -149,6 +157,23 @@ class SSHJournalCollector:
                 event_type="SSH_INVALID_USER",
                 severity="medium",
                 description=("Se detectó un intento SSH con un usuario inexistente."),
+                evidence=evidence,
+            )
+
+        preauth_closed = cls._PREAUTH_CLOSED.match(message)
+
+        if preauth_closed:
+            evidence = preauth_closed.groupdict()
+            evidence["ip"] = cls._normalize_ip(evidence["ip"])
+
+            return SSHJournalRecord(
+                cursor=cursor,
+                timestamp=timestamp,
+                event_type=("SSH_PREAUTH_CONNECTION_CLOSED"),
+                severity="low",
+                description=(
+                    "Se cerró una conexión SSH durante la fase de preautenticación."
+                ),
                 evidence=evidence,
             )
 
