@@ -282,7 +282,7 @@ def test_ssh_events_are_correlated_after_persistence(
 
     assert len(authentication) == 5
     assert len(detections) == 1
-    assert len(responses) == 1
+    assert len(responses) == 2
 
     detection = detections[0]
 
@@ -292,18 +292,26 @@ def test_ssh_events_are_correlated_after_persistence(
     assert detection["evidence"]["distinct_user_count"] == 5
     assert detection["evidence"]["source_ip"] == "192.168.1.50"
 
-    response = responses[0]
+    responses_by_type = {event["event_type"]: event for event in responses}
 
-    assert response["event_type"] == "RESPONSE_DECISION"
+    response = responses_by_type["RESPONSE_DECISION"]
+    execution = responses_by_type["RESPONSE_EXECUTION"]
+
     assert response["source"] == "response-engine"
     assert response["severity"] == "low"
-
     assert response["evidence"]["detection_event_id"] == detection["event_id"]
     assert response["evidence"]["action"] == "RECOMMEND_BLOCK_IP"
     assert response["evidence"]["mode"] == "audit_only"
     assert response["evidence"]["target_ip"] == "192.168.1.50"
     assert response["evidence"]["executed"] is False
     assert response["evidence"]["execution_allowed"] is False
+
+    assert execution["source"] == "response-executor"
+    assert execution["evidence"]["response_event_id"] == response["event_id"]
+    assert execution["evidence"]["detection_event_id"] == detection["event_id"]
+    assert execution["evidence"]["status"] == "SKIPPED"
+    assert execution["evidence"]["dry_run"] is True
+    assert execution["evidence"]["executed"] is False
 
     assert current["ssh_journal_cursor"] == ("cursor-final")
 

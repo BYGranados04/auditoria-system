@@ -20,6 +20,8 @@ from app.core.events import SecurityEvent
 from app.detection.ssh_collector import SSHJournalCollector
 from app.detection.ssh_correlation import SSHCorrelationEngine
 from app.response.engine import ResponsePolicyEngine
+from app.response.executor import ResponseExecutor
+from app.response.models import ResponseDecision
 from app.response.policy import ResponsePolicy
 from app.storage.event_repository import EventRepository
 
@@ -50,13 +52,16 @@ class ContinuousAgent:
         self.running = True
         self.hostname = platform.node()
         self.ssh_collector = SSHJournalCollector()
-        self.response_engine = ResponsePolicyEngine(
-            ResponsePolicy(
-                mode=self.settings.response_mode,
-                trusted_admin_ips=set(self.settings.trusted_admin_ips),
-                allow_temporary_ip_block=(self.settings.allow_temporary_ip_block),
-                temporary_block_seconds=(self.settings.temporary_block_seconds),
-            )
+        self.response_policy = ResponsePolicy(
+            mode=self.settings.response_mode,
+            trusted_admin_ips=set(self.settings.trusted_admin_ips),
+            allow_temporary_ip_block=(self.settings.allow_temporary_ip_block),
+            temporary_block_seconds=(self.settings.temporary_block_seconds),
+        )
+        self.response_engine = ResponsePolicyEngine(self.response_policy)
+        self.response_executor = ResponseExecutor(
+            self.response_policy,
+            dry_run=True,
         )
 
     def _ensure_runtime_dirs(self) -> None:
@@ -328,6 +333,26 @@ class ContinuousAgent:
             source="response-engine",
         )
 
+    def _emit_response_execution(
+        self,
+        response_event: SecurityEvent,
+    ) -> SecurityEvent:
+        decision = ResponseDecision.model_validate(response_event.evidence)
+
+        result = self.response_executor.execute(decision)
+
+        return self.emit(
+            category="response",
+            event_type="RESPONSE_EXECUTION",
+            severity="low",
+            description=("El ejecutor de respuestas evaluó una decisión de seguridad."),
+            evidence={
+                "response_event_id": str(response_event.event_id),
+                **result.model_dump(mode="json"),
+            },
+            source="response-executor",
+        )
+
     def _collect_ssh_events(
         self,
         previous: dict[str, Any],
@@ -397,7 +422,8 @@ class ContinuousAgent:
                     source="detection-engine",
                 )
 
-                self._emit_response_decision(detection_event)
+                response_event = self._emit_response_decision(detection_event)
+                self._emit_response_execution(response_event)
 
         current["ssh_journal_cursor"] = batch.cursor or cursor
 
