@@ -94,6 +94,31 @@ class NftablesFirewallPlanner:
         )
 
     @staticmethod
+    def render_prepare_ruleset() -> str:
+        return """table inet auditoria_response {
+    set blocked_ipv4 {
+        type ipv4_addr;
+        flags timeout;
+    }
+
+    set blocked_ipv6 {
+        type ipv6_addr;
+        flags timeout;
+    }
+
+    chain input {
+        type filter hook input priority -10; policy accept;
+
+        iifname "lo" return
+        iifname "tailscale0" return
+
+        ip saddr @blocked_ipv4 counter drop
+        ip6 saddr @blocked_ipv6 counter drop
+    }
+}
+"""
+
+    @staticmethod
     def _parse_address(
         target_ip: str,
     ) -> IPv4Address | IPv6Address:

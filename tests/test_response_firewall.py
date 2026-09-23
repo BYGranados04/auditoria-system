@@ -167,3 +167,22 @@ def test_renders_delete_element() -> None:
     assert plan.render_delete_element() == (
         "delete element inet auditoria_response blocked_ipv4 { 192.168.1.50 }"
     )
+
+
+def test_renders_isolated_nftables_ruleset() -> None:
+    planner = NftablesFirewallPlanner()
+
+    ruleset = planner.render_prepare_ruleset()
+
+    assert "table inet auditoria_response" in ruleset
+    assert "set blocked_ipv4" in ruleset
+    assert "type ipv4_addr;" in ruleset
+    assert "set blocked_ipv6" in ruleset
+    assert "type ipv6_addr;" in ruleset
+    assert "flags timeout;" in ruleset
+
+    assert 'iifname "lo" return' in ruleset
+    assert 'iifname "tailscale0" return' in ruleset
+
+    assert "ip saddr @blocked_ipv4 counter drop" in ruleset
+    assert "ip6 saddr @blocked_ipv6 counter drop" in ruleset
