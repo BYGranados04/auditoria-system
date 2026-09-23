@@ -17,6 +17,13 @@ ResponseAction = Literal[
     "TEMPORARY_BLOCK_IP",
 ]
 
+ResponseExecutionStatus = Literal[
+    "SKIPPED",
+    "DRY_RUN",
+    "EXECUTED",
+    "FAILED",
+]
+
 
 class ResponseDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -33,3 +40,17 @@ class ResponseDecision(BaseModel):
     approval_required: bool = False
     execution_allowed: bool = False
     executed: bool = False
+
+
+class ResponseExecutionResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    detection_event_id: UUID
+    action: ResponseAction
+    target_ip: str | None = None
+    duration_seconds: int | None = None
+
+    status: ResponseExecutionStatus
+    dry_run: bool
+    executed: bool
+    reason: str
