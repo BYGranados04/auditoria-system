@@ -10,6 +10,12 @@ def prepare_agent(
 ):
     agent = ContinuousAgent(interval=1)
 
+    monkeypatch.setattr(
+        agent.ssh_collector,
+        "latest_cursor",
+        lambda: None,
+    )
+
     events: list[dict[str, Any]] = []
     saved: list[dict[str, Any]] = []
     comparisons: list[tuple[dict[str, Any], dict[str, Any]]] = []

@@ -17,6 +17,8 @@ import psutil
 
 from app.core.config import AgentSettings, load_agent_settings
 from app.core.events import SecurityEvent
+from app.detection.ssh_collector import SSHJournalCollector
+from app.detection.ssh_correlation import SSHCorrelationEngine
 from app.storage.event_repository import EventRepository
 
 WATCHED_PATHS = [
@@ -45,6 +47,7 @@ class ContinuousAgent:
         )
         self.running = True
         self.hostname = platform.node()
+        self.ssh_collector = SSHJournalCollector()
 
     def _ensure_runtime_dirs(self) -> None:
         self.settings.state_dir.mkdir(
@@ -247,10 +250,13 @@ class ContinuousAgent:
         severity: str,
         description: str,
         evidence: dict[str, Any],
-    ) -> None:
+        timestamp: datetime | None = None,
+        source: str = "continuous-agent",
+    ) -> SecurityEvent:
         event_model = SecurityEvent(
+            timestamp=timestamp or datetime.now(UTC),
             hostname=self.hostname,
-            source="continuous-agent",
+            source=source,
             category=category,
             event_type=event_type,
             severity=severity,
@@ -283,6 +289,88 @@ class ContinuousAgent:
             ),
             flush=True,
         )
+
+        return event_model
+
+    def _seed_ssh_cursor(
+        self,
+        state: dict[str, Any],
+    ) -> None:
+        cursor = self.ssh_collector.latest_cursor()
+
+        if cursor is not None:
+            state["ssh_journal_cursor"] = cursor
+
+    def _collect_ssh_events(
+        self,
+        previous: dict[str, Any],
+        current: dict[str, Any],
+    ) -> None:
+        cursor = previous.get("ssh_journal_cursor")
+
+        if not isinstance(cursor, str) or not cursor:
+            self._seed_ssh_cursor(current)
+            return
+
+        try:
+            batch = self.ssh_collector.read_after(cursor)
+        except RuntimeError as exc:
+            latest_cursor = self.ssh_collector.latest_cursor()
+
+            current["ssh_journal_cursor"] = latest_cursor or cursor
+
+            self.emit(
+                category="authentication",
+                event_type="SSH_JOURNAL_RESYNC",
+                severity="medium",
+                description=(
+                    "El colector SSH perdió su posición "
+                    "en journald y fue resincronizado."
+                ),
+                evidence={
+                    "previous_cursor": cursor,
+                    "new_cursor": latest_cursor,
+                    "error": str(exc),
+                },
+            )
+            return
+
+        if not batch.records:
+            current["ssh_journal_cursor"] = batch.cursor or cursor
+            return
+
+        repository = EventRepository(self.settings.database_file)
+        repository.initialize()
+
+        correlation = SSHCorrelationEngine(repository)
+
+        for record in batch.records:
+            event_model = self.emit(
+                category="authentication",
+                event_type=record.event_type,
+                severity=record.severity,
+                description=record.description,
+                evidence={
+                    "journal_cursor": record.cursor,
+                    **record.evidence,
+                },
+                timestamp=record.timestamp,
+            )
+
+            detections = correlation.analyze(event_model)
+
+            for detection in detections:
+                self.emit(
+                    category="detection",
+                    event_type=detection.event_type,
+                    severity=detection.severity,
+                    description=detection.description,
+                    evidence=detection.evidence,
+                    timestamp=record.timestamp,
+                    source="detection-engine",
+                )
+
+        current["ssh_journal_cursor"] = batch.cursor or cursor
 
     def compare(
         self,
@@ -449,6 +537,7 @@ class ContinuousAgent:
 
     def initialize_baseline(self) -> dict[str, Any]:
         state = self.snapshot()
+        self._seed_ssh_cursor(state)
         self.save_state(state)
 
         self.emit(
@@ -473,6 +562,7 @@ class ContinuousAgent:
         current = self.snapshot()
 
         if "boot_id" not in previous:
+            self._seed_ssh_cursor(current)
             self.save_state(current)
             self.emit(
                 category="agent",
@@ -490,6 +580,7 @@ class ContinuousAgent:
         current_boot_id = current.get("boot_id")
 
         if previous_boot_id and current_boot_id and previous_boot_id != current_boot_id:
+            self._seed_ssh_cursor(current)
             self.emit(
                 category="system",
                 event_type="SYSTEM_REBOOT_DETECTED",
@@ -504,6 +595,10 @@ class ContinuousAgent:
             return
 
         self.compare(previous, current)
+        self._collect_ssh_events(
+            previous,
+            current,
+        )
         self.save_state(current)
 
     def run_forever(self) -> None:
