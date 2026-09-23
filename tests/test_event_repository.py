@@ -528,3 +528,169 @@ def test_v2_prevents_duplicate_live_blocks(
                     "PENDING",
                 ),
             )
+
+
+def test_response_block_lifecycle(
+    tmp_path: Path,
+) -> None:
+    from datetime import UTC, datetime
+
+    repo = repository(tmp_path)
+
+    requested_at = datetime(
+        2026,
+        9,
+        23,
+        7,
+        30,
+        tzinfo=UTC,
+    )
+
+    expires_at = datetime(
+        2026,
+        9,
+        23,
+        7,
+        45,
+        tzinfo=UTC,
+    )
+
+    repo.create_response_block(
+        block_id="block-lifecycle",
+        detection_event_id="detection-1",
+        response_event_id="response-1",
+        hostname="auditoria-server",
+        target_ip="192.168.1.50",
+        family="ip",
+        duration_seconds=900,
+        requested_at=requested_at,
+        expires_at=expires_at,
+    )
+
+    pending = repo.get_response_block("block-lifecycle")
+
+    assert pending is not None
+    assert pending["status"] == "PENDING"
+    assert pending["applied_at"] is None
+    assert pending["execution_event_id"] is None
+
+    repo.mark_response_block_active(
+        "block-lifecycle",
+        execution_event_id="execution-1",
+        applied_at=requested_at,
+    )
+
+    active = repo.get_response_block("block-lifecycle")
+
+    assert active is not None
+    assert active["status"] == "ACTIVE"
+    assert active["execution_event_id"] == "execution-1"
+    assert active["last_error"] is None
+
+    live = repo.list_live_response_blocks(
+        now=datetime(
+            2026,
+            9,
+            23,
+            7,
+            35,
+            tzinfo=UTC,
+        )
+    )
+
+    assert len(live) == 1
+    assert live[0]["block_id"] == "block-lifecycle"
+
+    expired_count = repo.expire_response_blocks(
+        now=datetime(
+            2026,
+            9,
+            23,
+            7,
+            46,
+            tzinfo=UTC,
+        )
+    )
+
+    assert expired_count == 1
+
+    expired = repo.get_response_block("block-lifecycle")
+
+    assert expired is not None
+    assert expired["status"] == "EXPIRED"
+
+
+def test_response_block_can_fail_from_pending(
+    tmp_path: Path,
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    repo = repository(tmp_path)
+
+    now = datetime(
+        2026,
+        9,
+        23,
+        8,
+        0,
+        tzinfo=UTC,
+    )
+
+    repo.create_response_block(
+        block_id="block-failed",
+        detection_event_id="detection-failed",
+        response_event_id="response-failed",
+        hostname="auditoria-server",
+        target_ip="192.168.1.51",
+        family="ip",
+        duration_seconds=900,
+        requested_at=now,
+        expires_at=now + timedelta(seconds=900),
+    )
+
+    repo.mark_response_block_failed(
+        "block-failed",
+        error="nftables rechazó la operación",
+    )
+
+    block = repo.get_response_block("block-failed")
+
+    assert block is not None
+    assert block["status"] == "FAILED"
+    assert block["last_error"] == "nftables rechazó la operación"
+
+
+def test_response_block_can_be_removed(
+    tmp_path: Path,
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    repo = repository(tmp_path)
+
+    now = datetime(
+        2026,
+        9,
+        23,
+        8,
+        10,
+        tzinfo=UTC,
+    )
+
+    repo.create_response_block(
+        block_id="block-removed",
+        detection_event_id="detection-removed",
+        response_event_id="response-removed",
+        hostname="auditoria-server",
+        target_ip="192.168.1.52",
+        family="ip",
+        duration_seconds=900,
+        requested_at=now,
+        expires_at=now + timedelta(seconds=900),
+    )
+
+    repo.mark_response_block_removed("block-removed")
+
+    block = repo.get_response_block("block-removed")
+
+    assert block is not None
+    assert block["status"] == "REMOVED"

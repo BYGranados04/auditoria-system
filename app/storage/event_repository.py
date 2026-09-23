@@ -232,6 +232,185 @@ class EventRepository:
                 ),
             )
 
+    def create_response_block(
+        self,
+        *,
+        block_id: str,
+        detection_event_id: str,
+        response_event_id: str,
+        hostname: str,
+        target_ip: str,
+        family: str,
+        duration_seconds: int,
+        requested_at: datetime,
+        expires_at: datetime,
+    ) -> None:
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO response_blocks (
+                    block_id,
+                    detection_event_id,
+                    response_event_id,
+                    hostname,
+                    target_ip,
+                    family,
+                    duration_seconds,
+                    requested_at,
+                    expires_at,
+                    status
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')
+                """,
+                (
+                    block_id,
+                    detection_event_id,
+                    response_event_id,
+                    hostname,
+                    target_ip,
+                    family,
+                    duration_seconds,
+                    requested_at.astimezone(UTC).isoformat(),
+                    expires_at.astimezone(UTC).isoformat(),
+                ),
+            )
+
+    def mark_response_block_active(
+        self,
+        block_id: str,
+        *,
+        execution_event_id: str,
+        applied_at: datetime,
+    ) -> None:
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE response_blocks
+                SET execution_event_id = ?,
+                    applied_at = ?,
+                    status = 'ACTIVE',
+                    last_error = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE block_id = ?
+                  AND status = 'PENDING'
+                """,
+                (
+                    execution_event_id,
+                    applied_at.astimezone(UTC).isoformat(),
+                    block_id,
+                ),
+            )
+
+            if cursor.rowcount != 1:
+                raise RuntimeError(
+                    f"No se pudo activar el bloqueo {block_id} desde estado PENDING."
+                )
+
+    def mark_response_block_failed(
+        self,
+        block_id: str,
+        *,
+        error: str,
+    ) -> None:
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE response_blocks
+                SET status = 'FAILED',
+                    last_error = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE block_id = ?
+                  AND status = 'PENDING'
+                """,
+                (
+                    error,
+                    block_id,
+                ),
+            )
+
+            if cursor.rowcount != 1:
+                raise RuntimeError(
+                    f"No se pudo marcar como FAILED el bloqueo {block_id}."
+                )
+
+    def mark_response_block_removed(
+        self,
+        block_id: str,
+    ) -> None:
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE response_blocks
+                SET status = 'REMOVED',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE block_id = ?
+                  AND status IN ('PENDING', 'ACTIVE')
+                """,
+                (block_id,),
+            )
+
+            if cursor.rowcount != 1:
+                raise RuntimeError(
+                    f"No se pudo marcar como REMOVED el bloqueo {block_id}."
+                )
+
+    def expire_response_blocks(
+        self,
+        *,
+        now: datetime,
+    ) -> int:
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE response_blocks
+                SET status = 'EXPIRED',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE status = 'ACTIVE'
+                  AND julianday(expires_at) <= julianday(?)
+                """,
+                (now.astimezone(UTC).isoformat(),),
+            )
+
+            return cursor.rowcount
+
+    def list_live_response_blocks(
+        self,
+        *,
+        now: datetime,
+    ) -> list[dict[str, Any]]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM response_blocks
+                WHERE status IN ('PENDING', 'ACTIVE')
+                  AND julianday(expires_at) > julianday(?)
+                ORDER BY expires_at ASC
+                """,
+                (now.astimezone(UTC).isoformat(),),
+            ).fetchall()
+
+        return [dict(row) for row in rows]
+
+    def get_response_block(
+        self,
+        block_id: str,
+    ) -> dict[str, Any] | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM response_blocks
+                WHERE block_id = ?
+                """,
+                (block_id,),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        return dict(row)
+
     def statistics(self) -> dict[str, Any]:
         with self._connection() as connection:
             total = connection.execute(
