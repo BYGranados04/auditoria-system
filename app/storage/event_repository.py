@@ -193,12 +193,44 @@ class EventRepository:
 
         return int(row["total"])
 
+    def count_before(
+        self,
+        before: datetime,
+    ) -> int:
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM events
+                WHERE julianday(timestamp) < julianday(?)
+                """,
+                (before.astimezone(UTC).isoformat(),),
+            ).fetchone()
+
+        return int(row["total"])
+
+    def delete_before(
+        self,
+        before: datetime,
+    ) -> int:
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                DELETE FROM events
+                WHERE julianday(timestamp) < julianday(?)
+                """,
+                (before.astimezone(UTC).isoformat(),),
+            )
+
+            return cursor.rowcount
+
     def list_events(
         self,
         *,
         severity: str | None = None,
         event_type: str | None = None,
         hostname: str | None = None,
+        category: str | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
         limit: int = 100,
@@ -217,6 +249,10 @@ class EventRepository:
         if hostname is not None:
             clauses.append("hostname = ?")
             parameters.append(hostname)
+
+        if category is not None:
+            clauses.append("category = ?")
+            parameters.append(category)
 
         if since is not None:
             clauses.append("julianday(timestamp) >= julianday(?)")

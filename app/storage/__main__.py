@@ -44,6 +44,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--hostname",
     )
     events.add_argument(
+        "--category",
+    )
+    events.add_argument(
         "--since",
         type=parse_datetime,
         help="Inicio del rango en formato ISO 8601",
@@ -64,6 +67,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Mostrar estadísticas de eventos",
     )
 
+    retention = subparsers.add_parser(
+        "retention",
+        help="Eliminar eventos anteriores a una fecha",
+    )
+    retention.add_argument(
+        "--before",
+        type=parse_datetime,
+        required=True,
+        help="Eliminar eventos anteriores a esta fecha ISO 8601",
+    )
+    retention.add_argument(
+        "--apply",
+        action="store_true",
+        help="Aplicar realmente la eliminación",
+    )
+
     return parser
 
 
@@ -79,12 +98,29 @@ def main() -> None:
             severity=args.severity,
             event_type=args.event_type,
             hostname=args.hostname,
+            category=args.category,
             since=args.since,
             until=args.until,
             limit=args.limit,
         )
-    else:
+    elif args.command == "stats":
         result = repository.statistics()
+    else:
+        affected = repository.count_before(args.before)
+
+        if args.apply:
+            deleted = repository.delete_before(args.before)
+            result = {
+                "mode": "applied",
+                "matching_events": affected,
+                "deleted_events": deleted,
+            }
+        else:
+            result = {
+                "mode": "dry-run",
+                "matching_events": affected,
+                "deleted_events": 0,
+            }
 
     print(
         json.dumps(

@@ -294,3 +294,56 @@ def test_rejects_database_from_future_schema(
         match="esquema más nuevo",
     ):
         repo.initialize()
+
+
+def test_filters_events_by_category(tmp_path: Path) -> None:
+    repo = repository(tmp_path)
+
+    network = make_event()
+    repo.add(network)
+
+    agent = SecurityEvent(
+        hostname="server-test",
+        source="test",
+        category="agent",
+        event_type="AGENT_STARTED",
+        severity="low",
+        description="Agente iniciado",
+        evidence={},
+    )
+    repo.add(agent)
+
+    events = repo.list_events(category="network")
+
+    assert len(events) == 1
+    assert events[0]["category"] == "network"
+
+
+def test_retention_counts_and_deletes_old_events(
+    tmp_path: Path,
+) -> None:
+    from datetime import UTC, datetime
+
+    repo = repository(tmp_path)
+
+    old_event = make_event()
+    old_event.timestamp = datetime(2026, 1, 1, tzinfo=UTC)
+
+    recent_event = make_event()
+    recent_event.timestamp = datetime(2026, 9, 1, tzinfo=UTC)
+
+    repo.add(old_event)
+    repo.add(recent_event)
+
+    cutoff = datetime(2026, 6, 1, tzinfo=UTC)
+
+    assert repo.count_before(cutoff) == 1
+
+    deleted = repo.delete_before(cutoff)
+
+    assert deleted == 1
+    assert repo.count() == 1
+
+    remaining = repo.list_events()
+
+    assert remaining[0]["event_id"] == str(recent_event.event_id)
