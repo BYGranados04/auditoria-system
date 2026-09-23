@@ -19,6 +19,10 @@ class AgentSettings:
     def events_file(self) -> Path:
         return self.log_dir / "events.jsonl"
 
+    @property
+    def database_file(self) -> Path:
+        return self.state_dir / "auditoria.db"
+
 
 def _positive_integer(name: str, default: int) -> int:
     raw = os.getenv(name)

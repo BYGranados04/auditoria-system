@@ -17,6 +17,7 @@ import psutil
 
 from app.core.config import AgentSettings, load_agent_settings
 from app.core.events import SecurityEvent
+from app.storage.event_repository import EventRepository
 
 WATCHED_PATHS = [
     "/etc/ssh/sshd_config",
@@ -260,6 +261,10 @@ class ContinuousAgent:
         event = event_model.model_dump(mode="json")
 
         self._ensure_runtime_dirs()
+
+        repository = EventRepository(self.settings.database_file)
+        repository.initialize()
+        repository.add(event_model)
 
         with self.settings.events_file.open("a") as file:
             file.write(
