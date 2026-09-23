@@ -374,3 +374,134 @@ def test_response_decision_preserves_loopback_safeguard(
 
     assert len(responses) == 1
     assert responses[0]["evidence"]["action"] == "NO_ACTION"
+
+
+def test_automatic_response_reaches_dry_run(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    settings = AgentSettings(
+        interval=1,
+        state_dir=tmp_path / "state",
+        log_dir=tmp_path / "logs",
+        response_mode="automatic",
+        allow_temporary_ip_block=True,
+        temporary_block_seconds=900,
+    )
+
+    agent = ContinuousAgent(
+        interval=1,
+        settings=settings,
+    )
+
+    previous = {
+        "ssh_journal_cursor": "cursor-anterior",
+    }
+    current = {}
+
+    records = []
+
+    for index in range(5):
+        records.append(
+            SSHJournalRecord(
+                cursor=f"cursor-automatic-{index}",
+                timestamp=datetime(
+                    2026,
+                    9,
+                    23,
+                    6,
+                    30,
+                    index,
+                    tzinfo=UTC,
+                ),
+                event_type="SSH_INVALID_USER",
+                severity="medium",
+                description="Usuario SSH inexistente.",
+                evidence={
+                    "user": f"automatic-{index}",
+                    "ip": "192.168.1.50",
+                    "port": str(51000 + index),
+                },
+            )
+        )
+
+    monkeypatch.setattr(
+        agent.ssh_collector,
+        "read_after",
+        lambda cursor: SSHJournalBatch(
+            records=records,
+            cursor="cursor-automatic-final",
+        ),
+    )
+
+    agent._collect_ssh_events(
+        previous,
+        current,
+    )
+
+    from app.storage.event_repository import EventRepository
+
+    repository = EventRepository(settings.database_file)
+
+    detections = repository.list_events(
+        category="detection",
+        limit=10,
+    )
+
+    responses = repository.list_events(
+        category="response",
+        limit=10,
+    )
+
+    assert len(detections) == 1
+    assert len(responses) == 2
+
+    responses_by_type = {
+        event["event_type"]: event
+        for event in responses
+    }
+
+    decision = responses_by_type["RESPONSE_DECISION"]
+    execution = responses_by_type["RESPONSE_EXECUTION"]
+
+    assert (
+        decision["evidence"]["action"]
+        == "TEMPORARY_BLOCK_IP"
+    )
+    assert decision["evidence"]["mode"] == "automatic"
+    assert (
+        decision["evidence"]["target_ip"]
+        == "192.168.1.50"
+    )
+    assert (
+        decision["evidence"]["duration_seconds"]
+        == 900
+    )
+    assert (
+        decision["evidence"]["execution_allowed"]
+        is True
+    )
+    assert decision["evidence"]["executed"] is False
+
+    assert execution["source"] == "response-executor"
+    assert execution["evidence"]["status"] == "DRY_RUN"
+    assert execution["evidence"]["dry_run"] is True
+    assert execution["evidence"]["executed"] is False
+    assert (
+        execution["evidence"]["target_ip"]
+        == "192.168.1.50"
+    )
+    assert (
+        execution["evidence"]["duration_seconds"]
+        == 900
+    )
+
+    assert (
+        execution["evidence"]["response_event_id"]
+        == decision["event_id"]
+    )
+
+    assert (
+        current["ssh_journal_cursor"]
+        == "cursor-automatic-final"
+    )
