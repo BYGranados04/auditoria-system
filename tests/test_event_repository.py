@@ -1,4 +1,7 @@
+import sqlite3
 from pathlib import Path
+
+import pytest
 
 from app.core.events import SecurityEvent
 from app.storage.event_repository import EventRepository
@@ -34,6 +37,7 @@ def test_initializes_database(tmp_path: Path) -> None:
 
     assert repo.database_path.exists()
     assert repo.count() == 0
+    assert repo.schema_version() == 1
 
 
 def test_persists_event(tmp_path: Path) -> None:
@@ -194,3 +198,99 @@ def test_filters_events_by_time_range(tmp_path: Path) -> None:
 
     assert len(events) == 1
     assert events[0]["event_id"] == str(second.event_id)
+
+
+def test_initialize_is_idempotent(tmp_path: Path) -> None:
+    repo = repository(tmp_path)
+
+    event = make_event()
+    repo.add(event)
+
+    repo.initialize()
+    repo.initialize()
+
+    assert repo.schema_version() == 1
+    assert repo.count() == 1
+
+
+def test_migrates_existing_v0_database_without_losing_events(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "auditoria.db"
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE events (
+                event_id TEXT PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                hostname TEXT NOT NULL,
+                source TEXT NOT NULL,
+                category TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                description TEXT NOT NULL,
+                evidence_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+                    DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        connection.execute(
+            """
+            INSERT INTO events (
+                event_id,
+                timestamp,
+                hostname,
+                source,
+                category,
+                event_type,
+                severity,
+                description,
+                evidence_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "legacy-event",
+                "2026-09-23T03:00:00Z",
+                "legacy-server",
+                "continuous-agent",
+                "network",
+                "PORT_OPENED",
+                "medium",
+                "Evento existente",
+                '{"port": "tcp:127.0.0.1:9000"}',
+            ),
+        )
+
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 0
+
+    repo = EventRepository(database_path)
+    repo.initialize()
+
+    assert repo.schema_version() == 1
+    assert repo.count() == 1
+
+    events = repo.list_events()
+
+    assert events[0]["event_id"] == "legacy-event"
+    assert events[0]["event_type"] == "PORT_OPENED"
+
+
+def test_rejects_database_from_future_schema(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "auditoria.db"
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA user_version = 2")
+
+    repo = EventRepository(database_path)
+
+    with pytest.raises(
+        RuntimeError,
+        match="esquema más nuevo",
+    ):
+        repo.initialize()

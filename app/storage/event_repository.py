@@ -12,6 +12,8 @@ from app.core.events import SecurityEvent
 
 
 class EventRepository:
+    SCHEMA_VERSION = 1
+
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path
 
@@ -35,44 +37,85 @@ class EventRepository:
             connection.execute("PRAGMA busy_timeout = 5000")
             yield connection
             connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
         finally:
             connection.close()
 
     def initialize(self) -> None:
         with self._connection() as connection:
+            current_version = self._schema_version(connection)
+
+            if current_version > self.SCHEMA_VERSION:
+                raise RuntimeError(
+                    "La base de datos usa un esquema "
+                    f"más nuevo ({current_version}) "
+                    f"que esta aplicación ({self.SCHEMA_VERSION})."
+                )
+
+            migrations = {
+                1: self._migrate_to_v1,
+            }
+
+            while current_version < self.SCHEMA_VERSION:
+                next_version = current_version + 1
+                migration = migrations[next_version]
+
+                migration(connection)
+
+                connection.execute(f"PRAGMA user_version = {next_version}")
+                current_version = next_version
+
+    @staticmethod
+    def _schema_version(
+        connection: sqlite3.Connection,
+    ) -> int:
+        row = connection.execute("PRAGMA user_version").fetchone()
+
+        return int(row[0])
+
+    def schema_version(self) -> int:
+        with self._connection() as connection:
+            return self._schema_version(connection)
+
+    @staticmethod
+    def _migrate_to_v1(
+        connection: sqlite3.Connection,
+    ) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS events (
+                event_id TEXT PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                hostname TEXT NOT NULL,
+                source TEXT NOT NULL,
+                category TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                description TEXT NOT NULL,
+                evidence_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+                    DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        indexes = (
+            ("idx_events_timestamp", "timestamp"),
+            ("idx_events_hostname", "hostname"),
+            ("idx_events_severity", "severity"),
+            ("idx_events_type", "event_type"),
+            ("idx_events_category", "category"),
+        )
+
+        for name, column in indexes:
             connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS events (
-                    event_id TEXT PRIMARY KEY,
-                    timestamp TEXT NOT NULL,
-                    hostname TEXT NOT NULL,
-                    source TEXT NOT NULL,
-                    category TEXT NOT NULL,
-                    event_type TEXT NOT NULL,
-                    severity TEXT NOT NULL,
-                    description TEXT NOT NULL,
-                    evidence_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                        DEFAULT CURRENT_TIMESTAMP
-                )
+                f"""
+                CREATE INDEX IF NOT EXISTS {name}
+                ON events ({column})
                 """
             )
-
-            indexes = (
-                ("idx_events_timestamp", "timestamp"),
-                ("idx_events_hostname", "hostname"),
-                ("idx_events_severity", "severity"),
-                ("idx_events_type", "event_type"),
-                ("idx_events_category", "category"),
-            )
-
-            for name, column in indexes:
-                connection.execute(
-                    f"""
-                    CREATE INDEX IF NOT EXISTS {name}
-                    ON events ({column})
-                    """
-                )
 
     def add(self, event: SecurityEvent) -> None:
         data = event.model_dump(mode="json")
