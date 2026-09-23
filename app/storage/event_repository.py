@@ -4,6 +4,7 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -155,6 +156,8 @@ class EventRepository:
         severity: str | None = None,
         event_type: str | None = None,
         hostname: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         clauses: list[str] = []
@@ -171,6 +174,14 @@ class EventRepository:
         if hostname is not None:
             clauses.append("hostname = ?")
             parameters.append(hostname)
+
+        if since is not None:
+            clauses.append("julianday(timestamp) >= julianday(?)")
+            parameters.append(since.astimezone(UTC).isoformat())
+
+        if until is not None:
+            clauses.append("julianday(timestamp) <= julianday(?)")
+            parameters.append(until.astimezone(UTC).isoformat())
 
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
 

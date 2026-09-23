@@ -132,3 +132,65 @@ def test_statistics_groups_events(tmp_path: Path) -> None:
     assert stats["by_severity"]["low"] == 1
     assert stats["by_event_type"]["SSH_ATTACK"] == 2
     assert stats["by_event_type"]["PORT_CLOSED"] == 1
+
+
+def test_filters_events_by_time_range(tmp_path: Path) -> None:
+    from datetime import UTC, datetime
+
+    repo = repository(tmp_path)
+
+    first = make_event()
+    first.timestamp = datetime(
+        2026,
+        9,
+        23,
+        3,
+        10,
+        tzinfo=UTC,
+    )
+
+    second = make_event()
+    second.timestamp = datetime(
+        2026,
+        9,
+        23,
+        3,
+        20,
+        tzinfo=UTC,
+    )
+
+    third = make_event()
+    third.timestamp = datetime(
+        2026,
+        9,
+        23,
+        3,
+        30,
+        tzinfo=UTC,
+    )
+
+    repo.add(first)
+    repo.add(second)
+    repo.add(third)
+
+    events = repo.list_events(
+        since=datetime(
+            2026,
+            9,
+            23,
+            3,
+            15,
+            tzinfo=UTC,
+        ),
+        until=datetime(
+            2026,
+            9,
+            23,
+            3,
+            25,
+            tzinfo=UTC,
+        ),
+    )
+
+    assert len(events) == 1
+    assert events[0]["event_id"] == str(second.event_id)
