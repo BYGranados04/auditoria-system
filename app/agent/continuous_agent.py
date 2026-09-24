@@ -21,8 +21,11 @@ from app.detection.ssh_collector import SSHJournalCollector
 from app.detection.ssh_correlation import SSHCorrelationEngine
 from app.response.engine import ResponsePolicyEngine
 from app.response.executor import ResponseExecutor
+from app.response.firewall import NftablesFirewallPlanner
+from app.response.firewall_backend import NftablesFirewallBackend
 from app.response.models import ResponseDecision
 from app.response.policy import ResponsePolicy
+from app.response.recovery import ResponseRecoveryManager
 from app.storage.event_repository import EventRepository
 
 WATCHED_PATHS = [
@@ -353,6 +356,54 @@ class ContinuousAgent:
             source="response-executor",
         )
 
+    def _recover_response_state(self) -> None:
+        repository = EventRepository(self.settings.database_file)
+        repository.initialize()
+
+        planner = NftablesFirewallPlanner(
+            protected_ips=set(self.settings.trusted_admin_ips)
+        )
+
+        backend = NftablesFirewallBackend()
+
+        manager = ResponseRecoveryManager(
+            repository=repository,
+            backend=backend,
+            planner=planner,
+        )
+
+        try:
+            summary = manager.recover()
+        except Exception as exc:
+            self.emit(
+                category="response",
+                event_type="RESPONSE_RECOVERY_ERROR",
+                severity="high",
+                description=(
+                    "No fue posible recuperar el estado de respuestas defensivas."
+                ),
+                evidence={
+                    "error": str(exc),
+                },
+                source="response-recovery",
+            )
+            return
+
+        self.emit(
+            category="response",
+            event_type="RESPONSE_RECOVERY",
+            severity="low",
+            description=("Se recuperó el estado de respuestas defensivas del agente."),
+            evidence={
+                "table_created": summary.table_created,
+                "expired_count": summary.expired_count,
+                "failed_pending_count": (summary.failed_pending_count),
+                "restored_count": summary.restored_count,
+                "failed_restore_count": (summary.failed_restore_count),
+            },
+            source="response-recovery",
+        )
+
     def _collect_ssh_events(
         self,
         previous: dict[str, Any],
@@ -666,6 +717,8 @@ class ContinuousAgent:
                 "interval_seconds": self.interval,
             },
         )
+
+        self._recover_response_state()
 
         if self.load_state() is None:
             self.initialize_baseline()
