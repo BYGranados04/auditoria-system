@@ -12,6 +12,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import UUID, uuid4
 
 import psutil
 
@@ -19,6 +20,14 @@ from app.core.config import AgentSettings, load_agent_settings
 from app.core.events import SecurityEvent
 from app.detection.ssh_collector import SSHJournalCollector
 from app.detection.ssh_correlation import SSHCorrelationEngine
+from app.response.engine import ResponsePolicyEngine
+from app.response.executor import ResponseExecutor
+from app.response.firewall import NftablesFirewallPlanner
+from app.response.firewall_backend import NftablesFirewallBackend
+from app.response.models import ResponseDecision
+from app.response.policy import ResponsePolicy
+from app.response.protection import ResponseProtectionResolver
+from app.response.recovery import ResponseRecoveryManager
 from app.storage.event_repository import EventRepository
 
 WATCHED_PATHS = [
@@ -48,6 +57,42 @@ class ContinuousAgent:
         self.running = True
         self.hostname = platform.node()
         self.ssh_collector = SSHJournalCollector()
+        self.response_policy = ResponsePolicy(
+            mode=self.settings.response_mode,
+            trusted_admin_ips=set(self.settings.trusted_admin_ips),
+            allow_temporary_ip_block=(self.settings.allow_temporary_ip_block),
+            temporary_block_seconds=(self.settings.temporary_block_seconds),
+        )
+        self.response_engine = ResponsePolicyEngine(self.response_policy)
+        self.response_executor = self._build_response_executor()
+
+    def _build_response_executor(self) -> ResponseExecutor:
+        real_execution_enabled = (
+            self.settings.response_mode == "automatic"
+            and self.settings.allow_temporary_ip_block
+        )
+
+        if not real_execution_enabled:
+            return ResponseExecutor(
+                self.response_policy,
+                dry_run=True,
+            )
+
+        repository = EventRepository(self.settings.database_file)
+
+        backend = NftablesFirewallBackend()
+
+        protection_resolver = ResponseProtectionResolver(
+            trusted_admin_ips=(self.settings.trusted_admin_ips)
+        )
+
+        return ResponseExecutor(
+            self.response_policy,
+            dry_run=False,
+            repository=repository,
+            backend=backend,
+            protection_resolver=protection_resolver,
+        )
 
     def _ensure_runtime_dirs(self) -> None:
         self.settings.state_dir.mkdir(
@@ -252,8 +297,10 @@ class ContinuousAgent:
         evidence: dict[str, Any],
         timestamp: datetime | None = None,
         source: str = "continuous-agent",
+        event_id: UUID | None = None,
     ) -> SecurityEvent:
         event_model = SecurityEvent(
+            event_id=event_id or uuid4(),
             timestamp=timestamp or datetime.now(UTC),
             hostname=self.hostname,
             source=source,
@@ -300,6 +347,103 @@ class ContinuousAgent:
 
         if cursor is not None:
             state["ssh_journal_cursor"] = cursor
+
+    def _emit_response_decision(
+        self,
+        detection_event: SecurityEvent,
+    ) -> SecurityEvent:
+        decision = self.response_engine.evaluate(detection_event)
+
+        evidence = decision.model_dump(mode="json")
+
+        return self.emit(
+            category="response",
+            event_type="RESPONSE_DECISION",
+            severity="low",
+            description=("El motor de respuesta evaluó una detección de seguridad."),
+            evidence=evidence,
+            source="response-engine",
+        )
+
+    def _emit_response_execution(
+        self,
+        response_event: SecurityEvent,
+    ) -> SecurityEvent:
+        decision = ResponseDecision.model_validate(response_event.evidence)
+
+        execution_event_id = uuid4()
+
+        result = self.response_executor.execute(
+            decision,
+            response_event_id=response_event.event_id,
+            execution_event_id=execution_event_id,
+        )
+
+        return self.emit(
+            category="response",
+            event_type="RESPONSE_EXECUTION",
+            severity="low",
+            description=("El ejecutor de respuestas evaluó una decisión de seguridad."),
+            evidence={
+                "response_event_id": str(response_event.event_id),
+                **result.model_dump(mode="json"),
+            },
+            source="response-executor",
+            event_id=execution_event_id,
+        )
+
+    def _recover_response_state(self) -> None:
+        try:
+            repository = EventRepository(self.settings.database_file)
+            repository.initialize()
+
+            protection_snapshot = ResponseProtectionResolver(
+                trusted_admin_ips=(self.settings.trusted_admin_ips)
+            ).resolve()
+
+            planner = NftablesFirewallPlanner(
+                protected_ips=(protection_snapshot.protected_ips)
+            )
+
+            backend = NftablesFirewallBackend()
+
+            manager = ResponseRecoveryManager(
+                repository=repository,
+                backend=backend,
+                planner=planner,
+            )
+
+            summary = manager.recover()
+
+        except Exception as exc:
+            self.emit(
+                category="response",
+                event_type="RESPONSE_RECOVERY_ERROR",
+                severity="high",
+                description=(
+                    "No fue posible recuperar el estado de respuestas defensivas."
+                ),
+                evidence={
+                    "error": str(exc),
+                },
+                source="response-recovery",
+            )
+            return
+
+        self.emit(
+            category="response",
+            event_type="RESPONSE_RECOVERY",
+            severity="low",
+            description=("Se recuperó el estado de respuestas defensivas del agente."),
+            evidence={
+                "table_created": summary.table_created,
+                "expired_count": summary.expired_count,
+                "failed_pending_count": (summary.failed_pending_count),
+                "restored_count": summary.restored_count,
+                "failed_restore_count": (summary.failed_restore_count),
+            },
+            source="response-recovery",
+        )
 
     def _collect_ssh_events(
         self,
@@ -360,7 +504,7 @@ class ContinuousAgent:
             detections = correlation.analyze(event_model)
 
             for detection in detections:
-                self.emit(
+                detection_event = self.emit(
                     category="detection",
                     event_type=detection.event_type,
                     severity=detection.severity,
@@ -369,6 +513,9 @@ class ContinuousAgent:
                     timestamp=record.timestamp,
                     source="detection-engine",
                 )
+
+                response_event = self._emit_response_decision(detection_event)
+                self._emit_response_execution(response_event)
 
         current["ssh_journal_cursor"] = batch.cursor or cursor
 
@@ -611,6 +758,8 @@ class ContinuousAgent:
                 "interval_seconds": self.interval,
             },
         )
+
+        self._recover_response_state()
 
         if self.load_state() is None:
             self.initialize_baseline()

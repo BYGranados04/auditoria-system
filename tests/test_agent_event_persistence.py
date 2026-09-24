@@ -123,3 +123,41 @@ def test_emit_returns_persisted_security_event(
     assert str(event.event_id) == stored[0]["event_id"]
     assert event.source == "detection-engine"
     assert stored[0]["source"] == "detection-engine"
+
+
+def test_emit_preserves_explicit_event_id(
+    tmp_path: Path,
+) -> None:
+    from uuid import UUID
+
+    settings = AgentSettings(
+        interval=1,
+        state_dir=tmp_path / "state",
+        log_dir=tmp_path / "logs",
+    )
+
+    agent = ContinuousAgent(
+        interval=1,
+        settings=settings,
+    )
+
+    expected_id = UUID("11111111-2222-4333-8444-555555555555")
+
+    event = agent.emit(
+        category="response",
+        event_type="TEST_EXPLICIT_EVENT_ID",
+        severity="low",
+        description="Evento con UUID preasignado.",
+        evidence={"test": True},
+        event_id=expected_id,
+    )
+
+    repository = EventRepository(settings.database_file)
+
+    stored = repository.list_events(limit=1)
+
+    jsonl_event = json.loads(settings.events_file.read_text().strip())
+
+    assert event.event_id == expected_id
+    assert stored[0]["event_id"] == str(expected_id)
+    assert jsonl_event["event_id"] == str(expected_id)
