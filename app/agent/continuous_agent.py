@@ -346,7 +346,13 @@ class ContinuousAgent:
     ) -> SecurityEvent:
         decision = ResponseDecision.model_validate(response_event.evidence)
 
-        result = self.response_executor.execute(decision)
+        execution_event_id = uuid4()
+
+        result = self.response_executor.execute(
+            decision,
+            response_event_id=response_event.event_id,
+            execution_event_id=execution_event_id,
+        )
 
         return self.emit(
             category="response",
@@ -358,6 +364,7 @@ class ContinuousAgent:
                 **result.model_dump(mode="json"),
             },
             source="response-executor",
+            event_id=execution_event_id,
         )
 
     def _recover_response_state(self) -> None:
