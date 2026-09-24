@@ -25,6 +25,7 @@ from app.response.firewall import NftablesFirewallPlanner
 from app.response.firewall_backend import NftablesFirewallBackend
 from app.response.models import ResponseDecision
 from app.response.policy import ResponsePolicy
+from app.response.protection import ResponseProtectionResolver
 from app.response.recovery import ResponseRecoveryManager
 from app.storage.event_repository import EventRepository
 
@@ -357,23 +358,28 @@ class ContinuousAgent:
         )
 
     def _recover_response_state(self) -> None:
-        repository = EventRepository(self.settings.database_file)
-        repository.initialize()
-
-        planner = NftablesFirewallPlanner(
-            protected_ips=set(self.settings.trusted_admin_ips)
-        )
-
-        backend = NftablesFirewallBackend()
-
-        manager = ResponseRecoveryManager(
-            repository=repository,
-            backend=backend,
-            planner=planner,
-        )
-
         try:
+            repository = EventRepository(self.settings.database_file)
+            repository.initialize()
+
+            protection_snapshot = ResponseProtectionResolver(
+                trusted_admin_ips=(self.settings.trusted_admin_ips)
+            ).resolve()
+
+            planner = NftablesFirewallPlanner(
+                protected_ips=(protection_snapshot.protected_ips)
+            )
+
+            backend = NftablesFirewallBackend()
+
+            manager = ResponseRecoveryManager(
+                repository=repository,
+                backend=backend,
+                planner=planner,
+            )
+
             summary = manager.recover()
+
         except Exception as exc:
             self.emit(
                 category="response",
