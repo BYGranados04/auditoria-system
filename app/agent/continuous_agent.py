@@ -12,6 +12,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import UUID, uuid4
 
 import psutil
 
@@ -271,8 +272,10 @@ class ContinuousAgent:
         evidence: dict[str, Any],
         timestamp: datetime | None = None,
         source: str = "continuous-agent",
+        event_id: UUID | None = None,
     ) -> SecurityEvent:
         event_model = SecurityEvent(
+            event_id=event_id or uuid4(),
             timestamp=timestamp or datetime.now(UTC),
             hostname=self.hostname,
             source=source,
