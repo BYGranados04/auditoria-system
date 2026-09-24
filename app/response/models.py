@@ -54,3 +54,5 @@ class ResponseExecutionResult(BaseModel):
     dry_run: bool
     executed: bool
     reason: str
+
+    block_id: UUID | None = None
