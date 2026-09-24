@@ -333,6 +333,33 @@ class EventRepository:
                     f"No se pudo marcar como FAILED el bloqueo {block_id}."
                 )
 
+    def mark_active_response_block_failed(
+        self,
+        block_id: str,
+        *,
+        error: str,
+    ) -> None:
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE response_blocks
+                SET status = 'FAILED',
+                    last_error = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE block_id = ?
+                  AND status = 'ACTIVE'
+                """,
+                (
+                    error,
+                    block_id,
+                ),
+            )
+
+            if cursor.rowcount != 1:
+                raise RuntimeError(
+                    f"No se pudo marcar como FAILED el bloqueo activo {block_id}."
+                )
+
     def mark_response_block_removed(
         self,
         block_id: str,
