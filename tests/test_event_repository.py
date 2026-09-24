@@ -694,3 +694,146 @@ def test_response_block_can_be_removed(
 
     assert block is not None
     assert block["status"] == "REMOVED"
+
+
+def test_expire_response_blocks_expires_pending_too(
+    tmp_path: Path,
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    repo = repository(tmp_path)
+
+    now = datetime(
+        2026,
+        9,
+        24,
+        2,
+        0,
+        tzinfo=UTC,
+    )
+
+    repo.create_response_block(
+        block_id="pending-expired",
+        detection_event_id="detection-pending",
+        response_event_id="response-pending",
+        hostname="auditoria-server",
+        target_ip="192.0.2.10",
+        family="ip",
+        duration_seconds=60,
+        requested_at=now,
+        expires_at=now + timedelta(seconds=60),
+    )
+
+    expired = repo.expire_response_blocks(
+        now=now + timedelta(seconds=61),
+    )
+
+    assert expired == 1
+
+    block = repo.get_response_block("pending-expired")
+
+    assert block is not None
+    assert block["status"] == "EXPIRED"
+
+
+def test_fail_pending_response_blocks_only_fails_pending(
+    tmp_path: Path,
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    repo = repository(tmp_path)
+
+    now = datetime(
+        2026,
+        9,
+        24,
+        2,
+        10,
+        tzinfo=UTC,
+    )
+
+    for block_id, target_ip in (
+        ("pending-block", "192.0.2.20"),
+        ("active-block", "192.0.2.21"),
+    ):
+        repo.create_response_block(
+            block_id=block_id,
+            detection_event_id=f"detection-{block_id}",
+            response_event_id=f"response-{block_id}",
+            hostname="auditoria-server",
+            target_ip=target_ip,
+            family="ip",
+            duration_seconds=900,
+            requested_at=now,
+            expires_at=now + timedelta(seconds=900),
+        )
+
+    repo.mark_response_block_active(
+        "active-block",
+        execution_event_id="execution-active",
+        applied_at=now,
+    )
+
+    failed = repo.fail_pending_response_blocks(
+        reason=("La ejecución quedó pendiente durante un reinicio del agente.")
+    )
+
+    assert failed == 1
+
+    pending = repo.get_response_block("pending-block")
+    active = repo.get_response_block("active-block")
+
+    assert pending is not None
+    assert active is not None
+
+    assert pending["status"] == "FAILED"
+    assert "reinicio" in pending["last_error"]
+
+    assert active["status"] == "ACTIVE"
+
+
+def test_list_active_response_blocks_excludes_pending(
+    tmp_path: Path,
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    repo = repository(tmp_path)
+
+    now = datetime(
+        2026,
+        9,
+        24,
+        2,
+        20,
+        tzinfo=UTC,
+    )
+
+    for block_id, target_ip in (
+        ("pending-live", "192.0.2.30"),
+        ("active-live", "192.0.2.31"),
+    ):
+        repo.create_response_block(
+            block_id=block_id,
+            detection_event_id=f"detection-{block_id}",
+            response_event_id=f"response-{block_id}",
+            hostname="auditoria-server",
+            target_ip=target_ip,
+            family="ip",
+            duration_seconds=900,
+            requested_at=now,
+            expires_at=now + timedelta(seconds=900),
+        )
+
+    repo.mark_response_block_active(
+        "active-live",
+        execution_event_id="execution-live",
+        applied_at=now,
+    )
+
+    blocks = repo.list_active_response_blocks(
+        now=now,
+    )
+
+    assert len(blocks) == 1
+    assert blocks[0]["block_id"] == "active-live"
+    assert blocks[0]["status"] == "ACTIVE"

@@ -365,13 +365,51 @@ class EventRepository:
                 UPDATE response_blocks
                 SET status = 'EXPIRED',
                     updated_at = CURRENT_TIMESTAMP
-                WHERE status = 'ACTIVE'
+                WHERE status IN ('PENDING', 'ACTIVE')
                   AND julianday(expires_at) <= julianday(?)
                 """,
                 (now.astimezone(UTC).isoformat(),),
             )
 
             return cursor.rowcount
+
+    def fail_pending_response_blocks(
+        self,
+        *,
+        reason: str,
+    ) -> int:
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE response_blocks
+                SET status = 'FAILED',
+                    last_error = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE status = 'PENDING'
+                """,
+                (reason,),
+            )
+
+            return cursor.rowcount
+
+    def list_active_response_blocks(
+        self,
+        *,
+        now: datetime,
+    ) -> list[dict[str, Any]]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM response_blocks
+                WHERE status = 'ACTIVE'
+                  AND julianday(expires_at) > julianday(?)
+                ORDER BY expires_at ASC
+                """,
+                (now.astimezone(UTC).isoformat(),),
+            ).fetchall()
+
+        return [dict(row) for row in rows]
 
     def list_live_response_blocks(
         self,
