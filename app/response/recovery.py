@@ -124,7 +124,10 @@ class ResponseRecoveryManager:
             now=current,
         )
 
-        table_created = self.backend.prepare()
+        table_created = False
+
+        if active_blocks:
+            table_created = self.backend.prepare()
 
         restored_count = 0
         failed_restore_count = 0

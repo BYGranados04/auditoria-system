@@ -231,3 +231,35 @@ def test_recovery_marks_failed_when_firewall_rejects(
     assert block is not None
     assert block["status"] == "FAILED"
     assert "fallo simulado de nftables" in block["last_error"]
+
+
+def test_recovery_does_not_prepare_firewall_without_active_blocks(
+    tmp_path: Path,
+) -> None:
+    repo = repository(tmp_path)
+
+    now = datetime(
+        2026,
+        9,
+        24,
+        4,
+        0,
+        tzinfo=UTC,
+    )
+
+    backend = FakeFirewallBackend()
+
+    manager = ResponseRecoveryManager(
+        repository=repo,
+        backend=backend,  # type: ignore[arg-type]
+        planner=NftablesFirewallPlanner(),
+    )
+
+    summary = manager.recover(
+        now=now,
+    )
+
+    assert summary.table_created is False
+    assert summary.restored_count == 0
+    assert summary.failed_restore_count == 0
+    assert backend.prepare_calls == 0
