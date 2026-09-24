@@ -64,9 +64,34 @@ class ContinuousAgent:
             temporary_block_seconds=(self.settings.temporary_block_seconds),
         )
         self.response_engine = ResponsePolicyEngine(self.response_policy)
-        self.response_executor = ResponseExecutor(
+        self.response_executor = self._build_response_executor()
+
+    def _build_response_executor(self) -> ResponseExecutor:
+        real_execution_enabled = (
+            self.settings.response_mode == "automatic"
+            and self.settings.allow_temporary_ip_block
+        )
+
+        if not real_execution_enabled:
+            return ResponseExecutor(
+                self.response_policy,
+                dry_run=True,
+            )
+
+        repository = EventRepository(self.settings.database_file)
+
+        backend = NftablesFirewallBackend()
+
+        protection_resolver = ResponseProtectionResolver(
+            trusted_admin_ips=(self.settings.trusted_admin_ips)
+        )
+
+        return ResponseExecutor(
             self.response_policy,
-            dry_run=True,
+            dry_run=False,
+            repository=repository,
+            backend=backend,
+            protection_resolver=protection_resolver,
         )
 
     def _ensure_runtime_dirs(self) -> None:

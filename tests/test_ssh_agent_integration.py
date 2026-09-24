@@ -394,6 +394,13 @@ def test_automatic_response_reaches_dry_run(
         settings=settings,
     )
 
+    from app.response.executor import ResponseExecutor
+
+    agent.response_executor = ResponseExecutor(
+        agent.response_policy,
+        dry_run=True,
+    )
+
     previous = {
         "ssh_journal_cursor": "cursor-anterior",
     }
@@ -456,52 +463,25 @@ def test_automatic_response_reaches_dry_run(
     assert len(detections) == 1
     assert len(responses) == 2
 
-    responses_by_type = {
-        event["event_type"]: event
-        for event in responses
-    }
+    responses_by_type = {event["event_type"]: event for event in responses}
 
     decision = responses_by_type["RESPONSE_DECISION"]
     execution = responses_by_type["RESPONSE_EXECUTION"]
 
-    assert (
-        decision["evidence"]["action"]
-        == "TEMPORARY_BLOCK_IP"
-    )
+    assert decision["evidence"]["action"] == "TEMPORARY_BLOCK_IP"
     assert decision["evidence"]["mode"] == "automatic"
-    assert (
-        decision["evidence"]["target_ip"]
-        == "192.168.1.50"
-    )
-    assert (
-        decision["evidence"]["duration_seconds"]
-        == 900
-    )
-    assert (
-        decision["evidence"]["execution_allowed"]
-        is True
-    )
+    assert decision["evidence"]["target_ip"] == "192.168.1.50"
+    assert decision["evidence"]["duration_seconds"] == 900
+    assert decision["evidence"]["execution_allowed"] is True
     assert decision["evidence"]["executed"] is False
 
     assert execution["source"] == "response-executor"
     assert execution["evidence"]["status"] == "DRY_RUN"
     assert execution["evidence"]["dry_run"] is True
     assert execution["evidence"]["executed"] is False
-    assert (
-        execution["evidence"]["target_ip"]
-        == "192.168.1.50"
-    )
-    assert (
-        execution["evidence"]["duration_seconds"]
-        == 900
-    )
+    assert execution["evidence"]["target_ip"] == "192.168.1.50"
+    assert execution["evidence"]["duration_seconds"] == 900
 
-    assert (
-        execution["evidence"]["response_event_id"]
-        == decision["event_id"]
-    )
+    assert execution["evidence"]["response_event_id"] == decision["event_id"]
 
-    assert (
-        current["ssh_journal_cursor"]
-        == "cursor-automatic-final"
-    )
+    assert current["ssh_journal_cursor"] == "cursor-automatic-final"
