@@ -1,0 +1,203 @@
+from datetime import UTC, datetime
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from app.api.main import create_app
+from app.core.config import AgentSettings
+from app.core.events import SecurityEvent
+from app.storage.event_repository import EventRepository
+
+
+def build_client(
+    tmp_path: Path,
+) -> tuple[TestClient, EventRepository]:
+    settings = AgentSettings(
+        interval=1,
+        state_dir=tmp_path / "state",
+        log_dir=tmp_path / "logs",
+    )
+
+    settings.state_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    repository = EventRepository(settings.database_file)
+    repository.initialize()
+
+    application = create_app(
+        settings=settings,
+        repository=repository,
+    )
+
+    return (
+        TestClient(application),
+        repository,
+    )
+
+
+def add_event(
+    repository: EventRepository,
+    *,
+    timestamp: datetime,
+    severity: str,
+    category: str,
+    event_type: str,
+    hostname: str = "server-test",
+) -> SecurityEvent:
+    event = SecurityEvent(
+        timestamp=timestamp,
+        hostname=hostname,
+        source="test",
+        category=category,
+        event_type=event_type,
+        severity=severity,
+        description="Evento de prueba.",
+        evidence={
+            "source_ip": "192.0.2.50",
+        },
+    )
+
+    repository.add(event)
+
+    return event
+
+
+def test_detections_returns_only_detection_events(
+    tmp_path: Path,
+) -> None:
+    client, repository = build_client(tmp_path)
+
+    add_event(
+        repository,
+        timestamp=datetime(
+            2026,
+            9,
+            24,
+            10,
+            0,
+            tzinfo=UTC,
+        ),
+        severity="low",
+        category="authentication",
+        event_type="SSH_AUTH_SUCCESS",
+    )
+
+    detection = add_event(
+        repository,
+        timestamp=datetime(
+            2026,
+            9,
+            24,
+            11,
+            0,
+            tzinfo=UTC,
+        ),
+        severity="high",
+        category="detection",
+        event_type="SSH_BRUTE_FORCE_ATTEMPT",
+    )
+
+    response = client.get("/detections")
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert len(body) == 1
+    assert body[0]["event_id"] == str(detection.event_id)
+    assert body[0]["category"] == "detection"
+
+
+def test_detections_supports_filters(
+    tmp_path: Path,
+) -> None:
+    client, repository = build_client(tmp_path)
+
+    add_event(
+        repository,
+        timestamp=datetime(
+            2026,
+            9,
+            24,
+            10,
+            0,
+            tzinfo=UTC,
+        ),
+        severity="medium",
+        category="detection",
+        event_type="PORT_SCAN_DETECTED",
+        hostname="server-a",
+    )
+
+    matching = add_event(
+        repository,
+        timestamp=datetime(
+            2026,
+            9,
+            24,
+            11,
+            0,
+            tzinfo=UTC,
+        ),
+        severity="high",
+        category="detection",
+        event_type="SSH_USER_ENUMERATION_ATTEMPT",
+        hostname="server-b",
+    )
+
+    response = client.get(
+        "/detections",
+        params={
+            "severity": "high",
+            "event_type": ("SSH_USER_ENUMERATION_ATTEMPT"),
+            "hostname": "server-b",
+            "since": ("2026-09-24T10:30:00Z"),
+            "until": ("2026-09-24T11:30:00Z"),
+        },
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert len(body) == 1
+    assert body[0]["event_id"] == str(matching.event_id)
+
+
+def test_detections_rejects_invalid_limit(
+    tmp_path: Path,
+) -> None:
+    client, _ = build_client(tmp_path)
+
+    assert (
+        client.get(
+            "/detections",
+            params={"limit": 0},
+        ).status_code
+        == 422
+    )
+
+    assert (
+        client.get(
+            "/detections",
+            params={"limit": 1001},
+        ).status_code
+        == 422
+    )
+
+
+def test_detections_rejects_naive_datetime(
+    tmp_path: Path,
+) -> None:
+    client, _ = build_client(tmp_path)
+
+    response = client.get(
+        "/detections",
+        params={"since": ("2026-09-24T10:00:00")},
+    )
+
+    assert response.status_code == 422
+
+    assert response.json() == {"detail": ("since debe incluir zona horaria.")}
