@@ -14,36 +14,66 @@ from app.core.events import SecurityEvent
 class EventRepository:
     SCHEMA_VERSION = 2
 
-    def __init__(self, database_path: Path) -> None:
+    def __init__(
+        self,
+        database_path: Path,
+        *,
+        read_only: bool = False,
+    ) -> None:
         self.database_path = database_path
+        self.read_only = read_only
 
     @contextmanager
     def _connection(
         self,
     ) -> Iterator[sqlite3.Connection]:
-        self.database_path.parent.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
+        if self.read_only:
+            database_uri = self.database_path.absolute().as_uri() + "?mode=ro"
 
-        connection = sqlite3.connect(
-            self.database_path,
-            timeout=5,
-        )
+            connection = sqlite3.connect(
+                database_uri,
+                uri=True,
+                timeout=5,
+            )
+        else:
+            self.database_path.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            connection = sqlite3.connect(
+                self.database_path,
+                timeout=5,
+            )
+
         connection.row_factory = sqlite3.Row
 
         try:
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute("PRAGMA busy_timeout = 5000")
+
+            if self.read_only:
+                connection.execute("PRAGMA query_only = ON")
+
             yield connection
-            connection.commit()
+
+            if not self.read_only:
+                connection.commit()
+
         except Exception:
-            connection.rollback()
+            if not self.read_only:
+                connection.rollback()
+
             raise
+
         finally:
             connection.close()
 
     def initialize(self) -> None:
+        if self.read_only:
+            raise RuntimeError(
+                "No se puede inicializar un repositorio de solo lectura."
+            )
         with self._connection() as connection:
             current_version = self._schema_version(connection)
 

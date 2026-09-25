@@ -82,7 +82,10 @@ def create_app(
 ) -> FastAPI:
     resolved_settings = settings or load_agent_settings()
 
-    resolved_repository = repository or EventRepository(resolved_settings.database_file)
+    resolved_repository = repository or EventRepository(
+        resolved_settings.database_file,
+        read_only=True,
+    )
 
     application = FastAPI(
         title="Auditoria System API",
