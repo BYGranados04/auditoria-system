@@ -206,6 +206,75 @@ def create_app(
             for row in rows
         ]
 
+    @application.get(
+        "/detections",
+        response_model=list[EventResponse],
+        tags=["detections"],
+    )
+    def list_detections(
+        severity: Severity | None = None,
+        event_type: str | None = None,
+        hostname: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = Query(
+            default=100,
+            ge=1,
+            le=1000,
+        ),
+    ) -> list[EventResponse]:
+        _require_timezone(
+            since,
+            field_name="since",
+        )
+        _require_timezone(
+            until,
+            field_name="until",
+        )
+
+        if since is not None and until is not None and since > until:
+            raise HTTPException(
+                status_code=422,
+                detail=("since no puede ser posterior a until."),
+            )
+
+        if not resolved_settings.database_file.is_file():
+            raise HTTPException(
+                status_code=503,
+                detail="Base de datos no disponible.",
+            )
+
+        try:
+            rows = resolved_repository.list_events(
+                severity=severity,
+                event_type=event_type,
+                hostname=hostname,
+                category="detection",
+                since=since,
+                until=until,
+                limit=limit,
+            )
+        except sqlite3.Error as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Base de datos no disponible.",
+            ) from exc
+
+        return [
+            EventResponse(
+                event_id=row["event_id"],
+                timestamp=row["timestamp"],
+                hostname=row["hostname"],
+                source=row["source"],
+                category=row["category"],
+                event_type=row["event_type"],
+                severity=row["severity"],
+                description=row["description"],
+                evidence=row["evidence"],
+            )
+            for row in rows
+        ]
+
     return application
 
 
