@@ -552,6 +552,7 @@ class EventRepository:
         *,
         severity: str | None = None,
         event_type: str | None = None,
+        event_types: tuple[str, ...] | None = None,
         hostname: str | None = None,
         category: str | None = None,
         since: datetime | None = None,
@@ -565,9 +566,18 @@ class EventRepository:
             clauses.append("severity = ?")
             parameters.append(severity)
 
+        if event_type is not None and event_types is not None:
+            raise ValueError(
+                "event_type y event_types no pueden usarse al mismo tiempo."
+            )
+
         if event_type is not None:
             clauses.append("event_type = ?")
             parameters.append(event_type)
+        elif event_types:
+            placeholders = ", ".join("?" for _ in event_types)
+            clauses.append(f"event_type IN ({placeholders})")
+            parameters.extend(event_types)
 
         if hostname is not None:
             clauses.append("hostname = ?")
