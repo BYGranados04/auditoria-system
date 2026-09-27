@@ -32,6 +32,9 @@
         <a class="nav-item" data-module="responses" href="/dashboard/responses" aria-label="Respuestas" title="Respuestas">
           <span class="nav-icon" aria-hidden="true">↳</span><span class="nav-label">Respuestas</span>
         </a>
+        <a class="nav-item" data-module="servers" href="/dashboard/servers" aria-label="Mis servidores" title="Mis servidores">
+          <span class="nav-icon" aria-hidden="true">▣</span><span class="nav-label">Mis servidores</span>
+        </a>
         <a class="nav-item" data-module="users" href="/dashboard/users" aria-label="Usuarios" title="Usuarios" hidden>
           <span class="nav-icon" aria-hidden="true">○</span><span class="nav-label">Usuarios</span>
         </a>
@@ -181,7 +184,6 @@
               <label>Usuario<input name="username" type="text" minlength="3" maxlength="64" autocomplete="off" required></label>
               <div class="form-control"><label for="create-user-password">Contraseña</label><div class="password-field"><input id="create-user-password" name="password" type="password" minlength="8" maxlength="1024" autocomplete="new-password" required><button class="password-toggle" type="button" data-password-toggle aria-controls="create-user-password" aria-label="Mostrar contraseña" aria-pressed="false"><svg class="password-icon password-icon-show" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M1 8s2.6-4 7-4 7 4 7 4-2.6 4-7 4-7-4-7-4Z"></path><circle cx="8" cy="8" r="2"></circle></svg><svg class="password-icon password-icon-hide" viewBox="0 0 16 16" aria-hidden="true" focusable="false" hidden><path d="M2 2l12 12M6.2 4.3A7.7 7.7 0 0 1 8 4c4.4 0 7 4 7 4a10 10 0 0 1-2 2.4M9.8 11.7A7.7 7.7 0 0 1 8 12c-4.4 0-7-4-7-4a10 10 0 0 1 2-2.4"></path></svg></button></div></div>
               <label>Rol<select id="create-user-role" name="role"><option value="viewer">Viewer</option><option value="superadmin">Superadmin</option></select></label>
-              <label>Servidor(es)<select id="create-user-hostnames" name="hostnames" multiple required></select></label>
               <div class="filter-actions"><button type="submit">Crear usuario</button></div>
             </form>
             <div id="users-alert" class="inline-alert" role="alert" hidden></div>
@@ -189,6 +191,33 @@
               <table class="users-table" aria-labelledby="users-title">
                 <thead><tr><th>Usuario</th><th>Rol</th><th>Servidores</th><th>Estado</th><th>Creado</th><th>Acciones</th></tr></thead>
                 <tbody id="users-body"><tr><td colspan="6" class="state-cell"><span class="spinner"></span> Cargando usuarios…</td></tr></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <div class="module-view" data-view="servers" hidden>
+          <section class="module-section" aria-labelledby="servers-title">
+            <div class="module-heading server-heading">
+              <div><h2 id="servers-title">Mis servidores</h2><span id="servers-count" class="panel-count">—</span></div>
+              <button id="connect-server-button" class="primary-action" type="button">Conectar servidor</button>
+            </div>
+            <div id="servers-alert" class="inline-alert" role="alert" hidden></div>
+            <section id="registration-panel" class="registration-panel" aria-labelledby="registration-title" hidden>
+              <div class="registration-header">
+                <div>
+                  <h3 id="registration-title">Registrar agente</h3>
+                  <p>Ejecuta este comando una vez en el servidor que deseas conectar.</p>
+                </div>
+                <button id="copy-registration-command" class="table-action" type="button">Copiar comando</button>
+              </div>
+              <code id="registration-command" class="registration-command"></code>
+              <p class="registration-expiry">El token vence en <time id="registration-expires-at">—</time> y solo puede utilizarse una vez.</p>
+            </section>
+            <div class="table-wrap data-table-wrap">
+              <table class="servers-table" aria-labelledby="servers-title">
+                <thead><tr><th>Agent ID</th><th>Hostname</th><th>Estado</th><th>Último contacto</th><th>Registrado</th></tr></thead>
+                <tbody id="servers-body"><tr><td colspan="5" class="state-cell"><span class="spinner"></span> Cargando servidores…</td></tr></tbody>
               </table>
             </div>
           </section>

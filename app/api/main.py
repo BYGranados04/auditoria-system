@@ -11,6 +11,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict
 
+from app.agents.web import build_agent_router
 from app.auth.config import AuthSettings, load_auth_settings
 from app.auth.repository import AuthenticatedSession, AuthRepository
 from app.auth.web import AuthManager, build_auth_router
@@ -124,7 +125,6 @@ def create_app(
         resolved_auth_repository,
         resolved_auth_settings,
         clock=clock,
-        list_known_hostnames=resolved_repository.list_known_hostnames,
     )
 
     application = FastAPI(
@@ -133,6 +133,7 @@ def create_app(
         version="0.6.0-dev",
     )
     application.include_router(build_auth_router(auth_manager))
+    application.include_router(build_agent_router(auth_manager))
 
     @application.get(
         "/login",
@@ -150,6 +151,11 @@ def create_app(
 
     @application.get(
         "/dashboard/users",
+        include_in_schema=False,
+        response_class=FileResponse,
+    )
+    @application.get(
+        "/dashboard/servers",
         include_in_schema=False,
         response_class=FileResponse,
     )

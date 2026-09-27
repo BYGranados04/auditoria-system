@@ -57,6 +57,18 @@ class NewSession:
     expires_at: datetime
 
 
+@dataclass(frozen=True)
+class AgentRegistrationToken:
+    token: str
+    expires_at: datetime
+
+
+@dataclass(frozen=True)
+class EnrolledAgent:
+    agent: dict[str, object]
+    credential: str
+
+
 def normalize_username(username: str) -> str:
     normalized = username.strip().casefold()
     if not USERNAME_PATTERN.fullmatch(normalized):
@@ -115,11 +127,11 @@ def _timestamp(value: datetime) -> str:
 
 
 def _digest_token(token: str) -> bytes:
-    return hashlib.sha256(token.encode("ascii")).digest()
+    return hashlib.sha256(token.encode("utf-8")).digest()
 
 
 class AuthRepository:
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
 
     def __init__(
         self,
@@ -163,6 +175,7 @@ class AuthRepository:
                 migrations = {
                     1: self._migrate_to_v1,
                     2: self._migrate_to_v2,
+                    3: self._migrate_to_v3,
                 }
                 while version < self.SCHEMA_VERSION:
                     next_version = version + 1
@@ -226,6 +239,58 @@ class AuthRepository:
             """
         )
 
+    @staticmethod
+    def _migrate_to_v3(connection: sqlite3.Connection) -> None:
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS agents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id TEXT NOT NULL UNIQUE,
+                owner_user_id INTEGER NOT NULL
+                    REFERENCES users(id) ON DELETE CASCADE,
+                hostname TEXT NOT NULL,
+                status TEXT NOT NULL
+                    CHECK (status IN ('online', 'offline')),
+                registered_at TEXT NOT NULL,
+                last_seen_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_agents_owner
+                ON agents (owner_user_id);
+            CREATE INDEX IF NOT EXISTS idx_agents_status
+                ON agents (status);
+
+            CREATE TABLE IF NOT EXISTS agent_registration_tokens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner_user_id INTEGER NOT NULL
+                    REFERENCES users(id) ON DELETE CASCADE,
+                token_digest BLOB NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                used_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_agent_registration_owner
+                ON agent_registration_tokens (owner_user_id);
+            CREATE INDEX IF NOT EXISTS idx_agent_registration_expires
+                ON agent_registration_tokens (expires_at);
+
+            CREATE TABLE IF NOT EXISTS agent_credentials (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id TEXT NOT NULL
+                    REFERENCES agents(agent_id) ON DELETE CASCADE,
+                credential_digest BLOB NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                revoked_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_agent_credentials_agent
+                ON agent_credentials (agent_id);
+            """
+        )
+
     def _hash_password(
         self,
         password: bytes,
@@ -272,10 +337,15 @@ class AuthRepository:
             "active": bool(row["active"]),
             "created_at": str(row["created_at"]),
             "updated_at": str(row["updated_at"]),
-            "hostnames": (
+            "server_count": (
                 None
                 if role == "superadmin"
-                else cls._user_hostnames(connection, int(row["id"]))
+                else int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM agents WHERE owner_user_id = ?",
+                        (int(row["id"]),),
+                    ).fetchone()[0]
+                )
             ),
         }
 
@@ -285,21 +355,12 @@ class AuthRepository:
         username: str,
         password: str,
         role: str,
-        hostnames: Iterable[str] | None = None,
         now: datetime | None = None,
     ) -> dict[str, object]:
         self.initialize()
         normalized_username = normalize_username(username)
         encoded_password = validate_password(password)
         validated_role = validate_role(role)
-        validated_hostnames = normalize_hostnames(
-            hostnames,
-            required=validated_role == "viewer",
-        )
-        if validated_role == "superadmin" and validated_hostnames:
-            raise AuthValidationError(
-                "Los superadmin tienen acceso global y no usan asignaciones."
-            )
         salt = secrets.token_bytes(16)
         password_hash = self._hash_password(
             encoded_password,
@@ -334,17 +395,6 @@ class AuthRepository:
                     "SELECT * FROM users WHERE id = ?",
                     (cursor.lastrowid,),
                 ).fetchone()
-                user_id = int(row["id"])
-                connection.executemany(
-                    """
-                    INSERT INTO user_host_access (user_id, hostname, created_at)
-                    VALUES (?, ?, ?)
-                    """,
-                    (
-                        (user_id, hostname, timestamp)
-                        for hostname in validated_hostnames
-                    ),
-                )
                 result = self._public_user(connection, row)
         except sqlite3.IntegrityError as exc:
             raise AuthConflictError("El usuario ya existe.") from exc
@@ -480,6 +530,20 @@ class AuthRepository:
         with self._connection() as connection:
             return tuple(self._user_hostnames(connection, user_id))
 
+    def get_owned_agent_hostnames(self, user_id: int) -> tuple[str, ...]:
+        self.initialize()
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT hostname
+                FROM agents
+                WHERE owner_user_id = ?
+                ORDER BY hostname
+                """,
+                (user_id,),
+            ).fetchall()
+        return tuple(str(row["hostname"]) for row in rows)
+
     def replace_user_hostnames(
         self,
         user_id: int,
@@ -542,14 +606,6 @@ class AuthRepository:
             ).fetchone()
             if row is None:
                 raise AuthNotFoundError("Usuario no encontrado.")
-            if (
-                active
-                and str(row["role"]) == "viewer"
-                and not self._user_hostnames(connection, user_id)
-            ):
-                raise AuthConflictError(
-                    "No puede activar un viewer sin servidores asignados."
-                )
             if not active and row["role"] == "superadmin" and bool(row["active"]):
                 active_admins = int(
                     connection.execute(
@@ -578,7 +634,6 @@ class AuthRepository:
         *,
         role: str,
         actor_user_id: int,
-        hostnames: Iterable[str] | None = None,
         now: datetime | None = None,
     ) -> dict[str, object]:
         self.initialize()
@@ -607,37 +662,231 @@ class AuthRepository:
                     raise AuthConflictError(
                         "No se puede degradar al último superadmin activo."
                     )
-            if validated_role == "viewer":
-                current_hostnames = self._user_hostnames(connection, user_id)
-                next_hostnames = normalize_hostnames(
-                    hostnames if hostnames is not None else current_hostnames,
-                    required=bool(row["active"]),
-                )
-                if hostnames is not None:
-                    connection.execute(
-                        "DELETE FROM user_host_access WHERE user_id = ?", (user_id,)
-                    )
-                    connection.executemany(
-                        """
-                        INSERT INTO user_host_access (user_id, hostname, created_at)
-                        VALUES (?, ?, ?)
-                        """,
-                        (
-                            (user_id, hostname, _timestamp(_utc(now)))
-                            for hostname in next_hostnames
-                        ),
-                    )
-            else:
-                connection.execute(
-                    "DELETE FROM user_host_access WHERE user_id = ?", (user_id,)
-                )
             connection.execute(
                 "UPDATE users SET role = ?, updated_at = ? WHERE id = ?",
                 (validated_role, _timestamp(_utc(now)), user_id),
             )
-            if validated_role != str(row["role"]) or hostnames is not None:
+            if validated_role != str(row["role"]):
                 connection.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
             updated = connection.execute(
                 "SELECT * FROM users WHERE id = ?", (user_id,)
             ).fetchone()
             return self._public_user(connection, updated)
+
+    @staticmethod
+    def _public_agent(row: sqlite3.Row) -> dict[str, object]:
+        return {
+            "agent_id": str(row["agent_id"]),
+            "owner_user_id": int(row["owner_user_id"]),
+            "hostname": str(row["hostname"]),
+            "status": str(row["status"]),
+            "registered_at": str(row["registered_at"]),
+            "last_seen_at": (
+                str(row["last_seen_at"])
+                if row["last_seen_at"] is not None
+                else None
+            ),
+            "created_at": str(row["created_at"]),
+            "updated_at": str(row["updated_at"]),
+        }
+
+    def create_agent_registration_token(
+        self,
+        owner_user_id: int,
+        *,
+        ttl_seconds: int = 900,
+        now: datetime | None = None,
+    ) -> AgentRegistrationToken:
+        self.initialize()
+        current = _utc(now)
+        expires_at = current + timedelta(seconds=ttl_seconds)
+        token = f"reg_{secrets.token_urlsafe(32)}"
+        with self._connection() as connection:
+            owner = connection.execute(
+                "SELECT active FROM users WHERE id = ?", (owner_user_id,)
+            ).fetchone()
+            if owner is None or not bool(owner["active"]):
+                raise AuthNotFoundError("Usuario no encontrado.")
+            connection.execute(
+                """
+                INSERT INTO agent_registration_tokens (
+                    owner_user_id, token_digest, created_at, expires_at, used_at
+                ) VALUES (?, ?, ?, ?, NULL)
+                """,
+                (
+                    owner_user_id,
+                    _digest_token(token),
+                    _timestamp(current),
+                    _timestamp(expires_at),
+                ),
+            )
+        return AgentRegistrationToken(token=token, expires_at=expires_at)
+
+    def enroll_agent(
+        self,
+        *,
+        registration_token: str,
+        hostname: str,
+        now: datetime | None = None,
+    ) -> EnrolledAgent:
+        self.initialize()
+        normalized_hostname = hostname.strip()
+        if not normalized_hostname or len(normalized_hostname) > 255:
+            raise AuthValidationError("Hostname no válido.")
+        current = _utc(now)
+        timestamp = _timestamp(current)
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            token_row = connection.execute(
+                """
+                SELECT agent_registration_tokens.*
+                FROM agent_registration_tokens
+                JOIN users
+                  ON users.id = agent_registration_tokens.owner_user_id
+                WHERE token_digest = ?
+                  AND users.active = 1
+                """,
+                (_digest_token(registration_token),),
+            ).fetchone()
+            if (
+                token_row is None
+                or token_row["used_at"] is not None
+                or datetime.fromisoformat(str(token_row["expires_at"])) <= current
+            ):
+                raise AuthValidationError("Token de registro no válido o expirado.")
+
+            owner_user_id = int(token_row["owner_user_id"])
+            conflicting_owner = connection.execute(
+                """
+                SELECT owner_user_id
+                FROM agents
+                WHERE hostname = ?
+                  AND owner_user_id != ?
+                LIMIT 1
+                """,
+                (normalized_hostname, owner_user_id),
+            ).fetchone()
+            if conflicting_owner is not None:
+                raise AuthConflictError(
+                    "El hostname ya está asociado a otra cuenta."
+                )
+
+            agent_id = f"agt_{secrets.token_urlsafe(24)}"
+            credential = f"agc_{secrets.token_urlsafe(32)}"
+            connection.execute(
+                """
+                INSERT INTO agents (
+                    agent_id, owner_user_id, hostname, status,
+                    registered_at, last_seen_at, created_at, updated_at
+                ) VALUES (?, ?, ?, 'offline', ?, NULL, ?, ?)
+                """,
+                (
+                    agent_id,
+                    owner_user_id,
+                    normalized_hostname,
+                    timestamp,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO agent_credentials (
+                    agent_id, credential_digest, created_at, revoked_at
+                ) VALUES (?, ?, ?, NULL)
+                """,
+                (agent_id, _digest_token(credential), timestamp),
+            )
+            connection.execute(
+                """
+                UPDATE agent_registration_tokens
+                SET used_at = ?
+                WHERE id = ? AND used_at IS NULL
+                """,
+                (timestamp, int(token_row["id"])),
+            )
+            agent_row = connection.execute(
+                "SELECT * FROM agents WHERE agent_id = ?", (agent_id,)
+            ).fetchone()
+            return EnrolledAgent(
+                agent=self._public_agent(agent_row),
+                credential=credential,
+            )
+
+    def list_agents(
+        self,
+        *,
+        owner_user_id: int | None = None,
+    ) -> list[dict[str, object]]:
+        self.initialize()
+        parameters: tuple[object, ...] = ()
+        where = ""
+        if owner_user_id is not None:
+            where = " WHERE owner_user_id = ?"
+            parameters = (owner_user_id,)
+        with self._connection() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM agents{where} ORDER BY hostname, agent_id",
+                parameters,
+            ).fetchall()
+        return [self._public_agent(row) for row in rows]
+
+    def get_agent(
+        self,
+        agent_id: str,
+        *,
+        owner_user_id: int | None = None,
+    ) -> dict[str, object] | None:
+        self.initialize()
+        query = "SELECT * FROM agents WHERE agent_id = ?"
+        parameters: list[object] = [agent_id]
+        if owner_user_id is not None:
+            query += " AND owner_user_id = ?"
+            parameters.append(owner_user_id)
+        with self._connection() as connection:
+            row = connection.execute(query, parameters).fetchone()
+        return self._public_agent(row) if row is not None else None
+
+    def record_agent_heartbeat(
+        self,
+        *,
+        agent_id: str,
+        credential: str,
+        now: datetime | None = None,
+    ) -> dict[str, object] | None:
+        self.initialize()
+        current = _utc(now)
+        timestamp = _timestamp(current)
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM agents WHERE agent_id = ?", (agent_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            credentials = connection.execute(
+                """
+                SELECT credential_digest
+                FROM agent_credentials
+                WHERE agent_id = ? AND revoked_at IS NULL
+                """,
+                (agent_id,),
+            ).fetchall()
+            candidate = _digest_token(credential)
+            if not any(
+                hmac.compare_digest(candidate, bytes(item["credential_digest"]))
+                for item in credentials
+            ):
+                return None
+            connection.execute(
+                """
+                UPDATE agents
+                SET status = 'online', last_seen_at = ?, updated_at = ?
+                WHERE agent_id = ?
+                """,
+                (timestamp, timestamp, agent_id),
+            )
+            updated = connection.execute(
+                "SELECT * FROM agents WHERE agent_id = ?", (agent_id,)
+            ).fetchone()
+            return self._public_agent(updated)

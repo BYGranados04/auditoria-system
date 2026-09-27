@@ -8,6 +8,7 @@ const MODULES = {
   "/dashboard/events": { key: "events", title: "Eventos" },
   "/dashboard/detections": { key: "detections", title: "Detecciones" },
   "/dashboard/responses": { key: "responses", title: "Respuestas" },
+  "/dashboard/servers": { key: "servers", title: "Mis servidores" },
   "/dashboard/users": { key: "users", title: "Usuarios" },
 };
 
@@ -23,9 +24,9 @@ const elements = {
   apiIndicator: document.querySelector("#api-indicator"),
   apiStatus: document.querySelector("#api-status"),
   automaticBlocking: document.querySelector("#automatic-blocking"),
+  connectServerButton: document.querySelector("#connect-server-button"),
+  copyRegistrationCommand: document.querySelector("#copy-registration-command"),
   createUserForm: document.querySelector("#create-user-form"),
-  createUserHostnames: document.querySelector("#create-user-hostnames"),
-  createUserRole: document.querySelector("#create-user-role"),
   currentUser: document.querySelector("#current-user"),
   defenseApiStatus: document.querySelector("#status-api"),
   defenseHostname: document.querySelector("#status-hostname"),
@@ -43,6 +44,9 @@ const elements = {
   overviewDetectionsBody: document.querySelector("#overview-detections-body"),
   overviewEventsBody: document.querySelector("#overview-events-body"),
   refreshButton: document.querySelector("#refresh-button"),
+  registrationCommand: document.querySelector("#registration-command"),
+  registrationExpiresAt: document.querySelector("#registration-expires-at"),
+  registrationPanel: document.querySelector("#registration-panel"),
   responseMode: document.querySelector("#response-mode"),
   responsesBody: document.querySelector("#responses-body"),
   responsesCount: document.querySelector("#responses-count"),
@@ -50,6 +54,10 @@ const elements = {
   sidebar: document.querySelector("#sidebar"),
   sidebarBackdrop: document.querySelector("#sidebar-backdrop"),
   sidebarCollapse: document.querySelector("#sidebar-collapse"),
+  serversAlert: document.querySelector("#servers-alert"),
+  serversBody: document.querySelector("#servers-body"),
+  serversCount: document.querySelector("#servers-count"),
+  serversTitle: document.querySelector("#servers-title"),
   usersAlert: document.querySelector("#users-alert"),
   usersBody: document.querySelector("#users-body"),
   usersCount: document.querySelector("#users-count"),
@@ -199,13 +207,21 @@ function evidenceObject(event) {
 }
 
 function activateModule() {
-  document.title = `${currentModule.title} | Auditoria System`;
+  const serverTitle = authContext?.role === "superadmin" ? "Servidores" : "Mis servidores";
+  const pageTitle = currentModule.key === "servers" ? serverTitle : currentModule.title;
+  document.title = `${pageTitle} | Auditoria System`;
+  elements.serversTitle.textContent = serverTitle;
   document.querySelectorAll("[data-view]").forEach((view) => {
     view.hidden = view.dataset.view !== currentModule.key;
   });
   document.querySelectorAll(".nav-item[data-module]").forEach((link) => {
     if (link.dataset.module === "users") {
       link.hidden = authContext?.role !== "superadmin";
+    }
+    if (link.dataset.module === "servers") {
+      link.querySelector(".nav-label").textContent = serverTitle;
+      link.setAttribute("aria-label", serverTitle);
+      link.title = serverTitle;
     }
     const active = link.dataset.module === currentModule.key;
     link.classList.toggle("is-active", active);
@@ -226,8 +242,8 @@ async function loadAuthContext() {
   authContext = await response.json();
   if (authContext.role === "superadmin") {
     try {
-      const hostsResponse = await fetchJson("/admin/hosts");
-      knownHosts = hostsResponse.map((entry) => entry.hostname);
+      const agents = await fetchJson("/agents");
+      knownHosts = [...new Set(agents.map((agent) => agent.hostname))].sort();
     } catch (_error) {
       knownHosts = [];
     }
@@ -251,18 +267,12 @@ function appendHostOptions(select, selected = []) {
   });
 }
 
-function selectedHostnames(select) {
-  return Array.from(select.selectedOptions, (option) => option.value);
-}
-
 function populateHostnameControls() {
   document.querySelectorAll("[data-hostname-filter]").forEach((select) => {
     const firstOption = select.querySelector("option");
     select.replaceChildren(firstOption);
     appendHostOptions(select);
   });
-  elements.createUserHostnames.replaceChildren();
-  appendHostOptions(elements.createUserHostnames);
 }
 
 function populateFiltersFromLocation() {
@@ -420,6 +430,29 @@ function renderResponses(responses) {
   elements.responsesBody.replaceChildren(...rows);
 }
 
+function renderAgents(agents) {
+  elements.serversCount.textContent = `${agents.length} ${agents.length === 1 ? "servidor" : "servidores"}`;
+  if (agents.length === 0) {
+    elements.serversBody.replaceChildren(
+      stateRow(5, "No tienes servidores conectados. Usa Conectar servidor para comenzar."),
+    );
+    return;
+  }
+  const rows = agents.map((agent) => {
+    const status = agent.status === "online" ? "En línea" : "Sin conexión";
+    const row = document.createElement("tr");
+    row.append(
+      makeElement("td", "monospace", agent.agent_id),
+      makeElement("td", "monospace", agent.hostname),
+      makeElement("td", agent.status === "online" ? "agent-online" : "agent-offline", status),
+      makeElement("td", "timestamp", formatTimestamp(agent.last_seen_at)),
+      makeElement("td", "timestamp", formatTimestamp(agent.registered_at)),
+    );
+    return row;
+  });
+  elements.serversBody.replaceChildren(...rows);
+}
+
 function showUsersAlert(message, error = true) {
   elements.usersAlert.textContent = message;
   elements.usersAlert.classList.toggle("is-success", !error);
@@ -456,12 +489,6 @@ function renderUsers(users) {
   }
   const rows = users.map((user) => {
     const row = document.createElement("tr");
-    const hostSelect = document.createElement("select");
-    hostSelect.className = "table-select host-select";
-    hostSelect.multiple = true;
-    hostSelect.setAttribute("aria-label", `Servidores de ${user.username}`);
-    appendHostOptions(hostSelect, user.hostnames ?? []);
-
     const roleSelect = document.createElement("select");
     roleSelect.className = "table-select";
     ["viewer", "superadmin"].forEach((role) => {
@@ -473,13 +500,9 @@ function renderUsers(users) {
     roleSelect.setAttribute("aria-label", `Rol de ${user.username}`);
     roleSelect.addEventListener("change", async () => {
       try {
-        const payload = {
+        await authenticatedPost(`/admin/users/${user.id}/role`, {
           role: roleSelect.value,
-        };
-        if (roleSelect.value === "viewer") {
-          payload.hostnames = selectedHostnames(hostSelect);
-        }
-        await authenticatedPost(`/admin/users/${user.id}/role`, payload);
+        });
         await refreshAndReschedule();
       } catch (error) {
         roleSelect.value = user.role;
@@ -488,35 +511,6 @@ function renderUsers(users) {
     });
     const roleCell = document.createElement("td");
     roleCell.append(roleSelect);
-
-    const hostsCell = document.createElement("td");
-    if (user.role === "superadmin") {
-      const globalScope = document.createElement("details");
-      globalScope.className = "host-global";
-      globalScope.append(
-        makeElement("summary", "global-access", "Todos"),
-        hostSelect,
-      );
-      hostsCell.append(globalScope);
-    } else {
-      const saveHosts = makeElement("button", "table-action", "Guardar");
-      saveHosts.type = "button";
-      saveHosts.addEventListener("click", async () => {
-        try {
-          await authenticatedPost(`/admin/users/${user.id}/hosts`, {
-            hostnames: selectedHostnames(hostSelect),
-          });
-          showUsersAlert("Servidores actualizados. La sesión del usuario se cerró.", false);
-          await refreshAndReschedule();
-        } catch (error) {
-          showUsersAlert(error.message);
-        }
-      });
-      const assignment = document.createElement("div");
-      assignment.className = "host-assignment";
-      assignment.append(hostSelect, saveHosts);
-      hostsCell.append(assignment);
-    }
 
     const actionButton = makeElement(
       "button",
@@ -539,7 +533,11 @@ function renderUsers(users) {
     row.append(
       makeElement("td", "monospace", user.username),
       roleCell,
-      hostsCell,
+      makeElement(
+        "td",
+        "",
+        user.role === "superadmin" ? "Todos" : String(user.server_count ?? 0),
+      ),
       makeElement("td", user.active ? "user-active" : "user-inactive", user.active ? "Activo" : "Inactivo"),
       makeElement("td", "timestamp", formatTimestamp(user.created_at)),
       actionCell,
@@ -585,7 +583,9 @@ function moduleRequests() {
       "responses",
       fetchJson(endpointWithFilters("/responses", elements.responsesFilters, 100)),
     ]);
-  } else {
+  } else if (currentModule.key === "servers") {
+    requests.push(["agents", fetchJson("/agents")]);
+  } else if (currentModule.key === "users") {
     requests.push(["users", fetchJson("/admin/users")]);
   }
   return requests;
@@ -633,6 +633,14 @@ function renderModuleResult(key, result) {
     else {
       elements.usersBody.replaceChildren(
         stateRow(6, "No fue posible cargar los usuarios.", true),
+      );
+    }
+  }
+  if (key === "agents") {
+    if (validList) renderAgents(result.value);
+    else {
+      elements.serversBody.replaceChildren(
+        stateRow(5, "No fue posible cargar los servidores.", true),
       );
     }
   }
@@ -739,9 +747,6 @@ function configureAccountActions() {
         username: data.get("username"),
         password: data.get("password"),
         role: data.get("role"),
-        hostnames: data.get("role") === "viewer"
-          ? selectedHostnames(elements.createUserHostnames)
-          : [],
       });
       elements.createUserForm.reset();
       const passwordInput = document.querySelector("#create-user-password");
@@ -749,26 +754,44 @@ function configureAccountActions() {
         "[data-password-toggle]",
       );
       setPasswordVisibility(passwordToggle, passwordInput, false);
-      updateCreateUserScope();
       showUsersAlert("Usuario creado.", false);
       await refreshAndReschedule();
     } catch (error) {
       showUsersAlert(error.message);
     }
   });
-  elements.createUserRole.addEventListener("change", updateCreateUserScope);
-  updateCreateUserScope();
 }
 
-function updateCreateUserScope() {
-  const viewer = elements.createUserRole.value === "viewer";
-  elements.createUserHostnames.disabled = !viewer;
-  elements.createUserHostnames.required = viewer;
-  if (!viewer) {
-    Array.from(elements.createUserHostnames.options).forEach((option) => {
-      option.selected = false;
-    });
-  }
+function showServersAlert(message, error = true) {
+  elements.serversAlert.textContent = message;
+  elements.serversAlert.classList.toggle("is-success", !error);
+  elements.serversAlert.hidden = false;
+}
+
+function configureServerActions() {
+  elements.connectServerButton.addEventListener("click", async () => {
+    elements.serversAlert.hidden = true;
+    elements.connectServerButton.disabled = true;
+    try {
+      const registration = await authenticatedPost("/agents/registration-token", {});
+      elements.registrationCommand.textContent = registration.command;
+      elements.registrationExpiresAt.textContent = formatTimestamp(registration.expires_at);
+      elements.registrationPanel.hidden = false;
+      elements.copyRegistrationCommand.focus();
+    } catch (error) {
+      showServersAlert(error.message);
+    } finally {
+      elements.connectServerButton.disabled = false;
+    }
+  });
+  elements.copyRegistrationCommand.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(elements.registrationCommand.textContent);
+      showServersAlert("Comando copiado.", false);
+    } catch (_error) {
+      showServersAlert("No fue posible copiar el comando. Selecciónalo manualmente.");
+    }
+  });
 }
 
 async function initializeDashboard() {
@@ -779,6 +802,7 @@ async function initializeDashboard() {
   populateFiltersFromLocation();
   configureFilters();
   configureAccountActions();
+  configureServerActions();
   elements.refreshButton.addEventListener("click", refreshAndReschedule);
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) stopAutoRefresh();
