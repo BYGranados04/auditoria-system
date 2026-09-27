@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shlex
 from datetime import datetime
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -18,6 +19,22 @@ from app.auth.web import AuthManager
 AGENT_IDENTITY_PATH = "/etc/auditoria-system/agent-identity.json"
 REGISTRATION_TOKEN_SECONDS = 15 * 60
 bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def _configured_central_url(value: str | None) -> str:
+    if value is None or not value.strip():
+        raise HTTPException(
+            status_code=503,
+            detail="AUDITORIA_CENTRAL_URL debe configurarse para registrar agentes.",
+        )
+    normalized = value.strip().rstrip("/")
+    parsed = urlsplit(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(
+            status_code=503,
+            detail="AUDITORIA_CENTRAL_URL debe ser una URL http o https válida.",
+        )
+    return normalized
 
 
 class AgentResponse(BaseModel):
@@ -77,6 +94,7 @@ def build_agent_router(manager: AuthManager) -> APIRouter:
         ),
     ) -> RegistrationTokenResponse:
         manager.verify_csrf(request, session)
+        central_url = _configured_central_url(manager.settings.central_url)
         try:
             registration = manager.repository.create_agent_registration_token(
                 session.user_id,
@@ -85,7 +103,6 @@ def build_agent_router(manager: AuthManager) -> APIRouter:
             )
         except AuthNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        central_url = str(request.base_url).rstrip("/")
         command = " ".join(
             (
                 "sudo",

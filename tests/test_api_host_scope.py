@@ -83,7 +83,9 @@ def build_scoped_application(
         users[username] = int(user["id"])
         if hostnames:
             for hostname in hostnames:
-                registration = auth_repository.create_agent_registration_token(int(user["id"]))
+                registration = auth_repository.create_agent_registration_token(
+                    int(user["id"])
+                )
                 auth_repository.enroll_agent(
                     registration_token=registration.token,
                     hostname=hostname,
@@ -92,7 +94,10 @@ def build_scoped_application(
     application = create_app(
         settings=settings,
         repository=EventRepository(settings.database_file, read_only=True),
-        auth_settings=AuthSettings(database_file=auth_database),
+        auth_settings=AuthSettings(
+            database_file=auth_database,
+            central_url="https://central.example",
+        ),
         auth_repository=auth_repository,
     )
     return TestClient(application), auth_repository, settings.database_file, users

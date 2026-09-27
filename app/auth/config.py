@@ -10,6 +10,7 @@ class AuthSettings:
     database_file: Path
     session_seconds: int = 28_800
     cookie_secure: bool = False
+    central_url: str | None = None
 
 
 def _boolean(name: str, default: bool) -> bool:
@@ -43,4 +44,5 @@ def load_auth_settings() -> AuthSettings:
         ),
         session_seconds=_session_seconds(),
         cookie_secure=_boolean("AUDITORIA_AUTH_COOKIE_SECURE", False),
+        central_url=os.getenv("AUDITORIA_CENTRAL_URL"),
     )

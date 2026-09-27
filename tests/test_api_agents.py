@@ -16,6 +16,7 @@ def build_application(
     tmp_path: Path,
     *,
     clock=None,
+    central_url: str | None = "https://central.example",
 ) -> tuple[TestClient, AuthRepository, dict[str, int]]:
     settings = AgentSettings(
         interval=1,
@@ -47,7 +48,10 @@ def build_application(
     application = create_app(
         settings=settings,
         repository=event_repository,
-        auth_settings=AuthSettings(database_file=auth_repository.database_path),
+        auth_settings=AuthSettings(
+            database_file=auth_repository.database_path,
+            central_url=central_url,
+        ),
         auth_repository=auth_repository,
         clock=clock,
     )
@@ -96,6 +100,51 @@ def test_authenticated_user_generates_registration_token(tmp_path: Path) -> None
     token = create_registration_token(client, login)
 
     assert token.startswith("reg_")
+
+
+def test_registration_command_uses_configured_central_url(tmp_path: Path) -> None:
+    client, _, _ = build_application(
+        tmp_path,
+        central_url="https://auditoria.example:8443/api/",
+    )
+    login = login_as(client, "viewer-a")
+
+    response = client.post(
+        "/agents/registration-token",
+        headers=csrf_headers(login),
+        json={},
+    )
+
+    assert response.status_code == 200
+    assert "--server https://auditoria.example:8443/api" in response.json()["command"]
+
+
+def test_registration_token_requires_configured_central_url(tmp_path: Path) -> None:
+    client, _, _ = build_application(tmp_path, central_url=None)
+    login = login_as(client, "viewer-a")
+
+    response = client.post(
+        "/agents/registration-token",
+        headers=csrf_headers(login),
+        json={},
+    )
+
+    assert response.status_code == 503
+    assert "AUDITORIA_CENTRAL_URL" in response.json()["detail"]
+
+
+def test_registration_token_rejects_invalid_central_url(tmp_path: Path) -> None:
+    client, _, _ = build_application(tmp_path, central_url="ftp://central.example")
+    login = login_as(client, "viewer-a")
+
+    response = client.post(
+        "/agents/registration-token",
+        headers=csrf_headers(login),
+        json={},
+    )
+
+    assert response.status_code == 503
+    assert "http o https" in response.json()["detail"]
 
 
 def test_registration_token_is_stored_only_as_digest(tmp_path: Path) -> None:
