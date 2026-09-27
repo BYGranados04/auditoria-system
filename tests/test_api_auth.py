@@ -40,12 +40,17 @@ def build_application(
     )
     auth_database = tmp_path / "auth" / "auth.db"
     auth_repository = AuthRepository(auth_database, scrypt_parameters=TEST_SCRYPT)
-    auth_repository.create_user(
+    user = auth_repository.create_user(
         username="primary-user",
         password=TEST_PASSWORD,
         role=role,
-        hostnames=("auditoria-server",) if role == "viewer" else None,
     )
+    if role == "viewer":
+        registration = auth_repository.create_agent_registration_token(int(user["id"]))
+        auth_repository.enroll_agent(
+            registration_token=registration.token,
+            hostname="auditoria-server",
+        )
     application = create_app(
         settings=settings,
         repository=event_repository,
@@ -138,7 +143,6 @@ def test_superadmin_can_list_and_create_both_roles_without_secrets(
                 "username": username,
                 "password": TEST_PASSWORD,
                 "role": role,
-                "hostnames": ["auditoria-server"] if role == "viewer" else [],
             },
         )
         assert response.status_code == 201
@@ -167,7 +171,6 @@ def test_user_creation_rejects_seven_and_accepts_eight_character_passwords(
             "username": "seven-chars",
             "password": "1234567",
             "role": "viewer",
-            "hostnames": ["auditoria-server"],
         },
     )
     accepted = client.post(
@@ -177,7 +180,6 @@ def test_user_creation_rejects_seven_and_accepts_eight_character_passwords(
             "username": "eight-chars",
             "password": "12345678",
             "role": "viewer",
-            "hostnames": ["auditoria-server"],
         },
     )
 
@@ -192,7 +194,6 @@ def test_csrf_and_origin_are_required_for_admin_mutations(tmp_path: Path) -> Non
         "username": "new-viewer",
         "password": TEST_PASSWORD,
         "role": "viewer",
-        "hostnames": ["auditoria-server"],
     }
 
     assert client.post("/admin/users", json=payload).status_code == 403
@@ -213,7 +214,6 @@ def test_disabled_user_loses_existing_session(tmp_path: Path) -> None:
         username="secondary-viewer",
         password=TEST_PASSWORD,
         role="viewer",
-        hostnames=("auditoria-server",),
     )
     viewer_client = TestClient(admin_client.app)
     viewer_login = viewer_client.post(
@@ -287,7 +287,6 @@ def test_auth_operations_do_not_modify_audit_database(tmp_path: Path) -> None:
             "username": "new-viewer",
             "password": TEST_PASSWORD,
             "role": "viewer",
-            "hostnames": ["auditoria-server"],
         },
     )
     client.post("/auth/logout", headers=csrf_headers(signed_in))
