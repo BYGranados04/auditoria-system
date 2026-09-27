@@ -20,6 +20,10 @@ from app.core.config import AgentSettings, load_agent_settings
 from app.core.events import SecurityEvent
 from app.detection.ssh_collector import SSHJournalCollector
 from app.detection.ssh_correlation import SSHCorrelationEngine
+from app.notifications.config import load_notification_settings
+from app.notifications.providers.resend import ResendProvider
+from app.notifications.repository import NotificationRepository
+from app.notifications.service import NotificationService
 from app.response.engine import ResponsePolicyEngine
 from app.response.executor import ResponseExecutor
 from app.response.firewall import NftablesFirewallPlanner
@@ -65,6 +69,19 @@ class ContinuousAgent:
         )
         self.response_engine = ResponsePolicyEngine(self.response_policy)
         self.response_executor = self._build_response_executor()
+        notification_settings = load_notification_settings()
+        self.notification_service = NotificationService(
+            settings=notification_settings,
+            repository=NotificationRepository(
+                self.settings.state_dir / "notifications.db"
+            ),
+            provider=ResendProvider(
+                api_key=notification_settings.resend_api_key,
+                sender=notification_settings.sender,
+                api_url=notification_settings.resend_api_url,
+                timeout_seconds=notification_settings.timeout_seconds,
+            ),
+        )
 
     def _build_response_executor(self) -> ResponseExecutor:
         real_execution_enabled = (
@@ -318,6 +335,12 @@ class ContinuousAgent:
         repository = EventRepository(self.settings.database_file)
         repository.initialize()
         repository.add(event_model)
+
+        try:
+            self.notification_service.notify(event_model)
+        except Exception:
+            # Notifications are intentionally secondary to audit persistence.
+            print("Notification delivery failed after event persistence.", flush=True)
 
         with self.settings.events_file.open("a") as file:
             file.write(

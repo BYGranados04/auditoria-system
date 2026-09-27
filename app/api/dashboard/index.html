@@ -32,6 +32,9 @@
         <a class="nav-item" data-module="responses" href="/dashboard/responses" aria-label="Respuestas" title="Respuestas">
           <span class="nav-icon" aria-hidden="true">↳</span><span class="nav-label">Respuestas</span>
         </a>
+        <a class="nav-item" data-module="notifications" href="/dashboard/notifications" aria-label="Notificaciones" title="Notificaciones">
+          <span class="nav-icon" aria-hidden="true">✉</span><span class="nav-label">Notificaciones</span>
+        </a>
         <a class="nav-item" data-module="servers" href="/dashboard/servers" aria-label="Mis servidores" title="Mis servidores">
           <span class="nav-icon" aria-hidden="true">▣</span><span class="nav-label">Mis servidores</span>
         </a>
@@ -174,6 +177,25 @@
                 <tbody id="responses-body"><tr><td colspan="7" class="state-cell"><span class="spinner"></span> Cargando respuestas…</td></tr></tbody>
               </table>
             </div>
+          </section>
+        </div>
+
+        <div class="module-view" data-view="notifications" hidden>
+          <section class="module-section" aria-labelledby="notifications-title">
+            <div class="module-heading"><h2 id="notifications-title">Notificaciones</h2><span id="notifications-count" class="panel-count">—</span></div>
+            <div class="metric-grid" aria-live="polite">
+              <article class="metric-card"><span>Total</span><strong id="notifications-total" class="metric-value">—</strong></article>
+              <article class="metric-card"><span>Enviadas</span><strong id="notifications-sent" class="metric-value">—</strong></article>
+              <article class="metric-card"><span>Fallidas</span><strong id="notifications-failed" class="metric-value">—</strong></article>
+              <article class="metric-card"><span>Pendientes</span><strong id="notifications-pending" class="metric-value">—</strong></article>
+            </div>
+            <form id="notifications-filters" class="filter-bar" action="/dashboard/notifications" method="get">
+              <label>Servidor<select name="hostname" data-hostname-filter><option value="">Todos permitidos</option></select></label>
+              <label>Estado<select name="status"><option value="">Todos</option><option value="sent">Enviadas</option><option value="failed">Fallidas</option><option value="pending">Pendientes</option></select></label>
+              <label>Severidad<select name="severity"><option value="">Todas</option><option value="critical">Crítica</option><option value="high">Alta</option></select></label>
+              <div class="filter-actions"><button type="submit">Aplicar</button><button type="button" data-reset-filters>Limpiar</button></div>
+            </form>
+            <div class="table-wrap data-table-wrap"><table aria-labelledby="notifications-title"><thead><tr><th>Fecha</th><th>Servidor</th><th>Severidad</th><th>Evento</th><th>Destinatario</th><th>Proveedor</th><th>Estado</th></tr></thead><tbody id="notifications-body"><tr><td colspan="7" class="state-cell">No hay notificaciones registradas.</td></tr></tbody></table></div>
           </section>
         </div>
 

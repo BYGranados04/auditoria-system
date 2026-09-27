@@ -8,6 +8,7 @@ const MODULES = {
   "/dashboard/events": { key: "events", title: "Eventos" },
   "/dashboard/detections": { key: "detections", title: "Detecciones" },
   "/dashboard/responses": { key: "responses", title: "Respuestas" },
+  "/dashboard/notifications": { key: "notifications", title: "Notificaciones" },
   "/dashboard/servers": { key: "servers", title: "Mis servidores" },
   "/dashboard/users": { key: "users", title: "Usuarios" },
 };
@@ -43,6 +44,13 @@ const elements = {
   mobileMenuToggle: document.querySelector("#mobile-menu-toggle"),
   overviewDetectionsBody: document.querySelector("#overview-detections-body"),
   overviewEventsBody: document.querySelector("#overview-events-body"),
+  notificationsBody: document.querySelector("#notifications-body"),
+  notificationsCount: document.querySelector("#notifications-count"),
+  notificationsFailed: document.querySelector("#notifications-failed"),
+  notificationsFilters: document.querySelector("#notifications-filters"),
+  notificationsPending: document.querySelector("#notifications-pending"),
+  notificationsSent: document.querySelector("#notifications-sent"),
+  notificationsTotal: document.querySelector("#notifications-total"),
   refreshButton: document.querySelector("#refresh-button"),
   registrationCommand: document.querySelector("#registration-command"),
   registrationExpiresAt: document.querySelector("#registration-expires-at"),
@@ -430,6 +438,34 @@ function renderResponses(responses) {
   elements.responsesBody.replaceChildren(...rows);
 }
 
+function renderNotifications(notifications) {
+  if (notifications.length === 0) {
+    elements.notificationsBody.replaceChildren(stateRow(7, "No hay notificaciones registradas."));
+    return;
+  }
+  const rows = notifications.map((notification) => {
+    const row = document.createElement("tr");
+    row.append(
+      makeElement("td", "timestamp", formatTimestamp(notification.created_at)),
+      makeElement("td", "monospace", notification.hostname),
+      makeElement("td", `severity-${notification.severity}`, notification.severity),
+      makeElement("td", "monospace", notification.event_id),
+      makeElement("td", "", notification.recipient),
+      makeElement("td", "", notification.provider),
+      makeElement("td", `status-${notification.status}`, notification.status),
+    );
+    return row;
+  });
+  elements.notificationsBody.replaceChildren(...rows);
+}
+
+function renderNotificationSummary(summary) {
+  elements.notificationsTotal.textContent = String(summary.total);
+  elements.notificationsSent.textContent = String(summary.sent);
+  elements.notificationsFailed.textContent = String(summary.failed);
+  elements.notificationsPending.textContent = String(summary.pending);
+}
+
 function renderAgents(agents) {
   elements.serversCount.textContent = `${agents.length} ${agents.length === 1 ? "servidor" : "servidores"}`;
   if (agents.length === 0) {
@@ -587,6 +623,9 @@ function moduleRequests() {
     requests.push(["agents", fetchJson("/agents")]);
   } else if (currentModule.key === "users") {
     requests.push(["users", fetchJson("/admin/users")]);
+  } else if (currentModule.key === "notifications") {
+    requests.push(["notifications", fetchJson(endpointWithFilters("/notifications", elements.notificationsFilters, 100))]);
+    requests.push(["notificationSummary", fetchJson("/notifications/summary")]);
   }
   return requests;
 }
@@ -643,6 +682,17 @@ function renderModuleResult(key, result) {
         stateRow(5, "No fue posible cargar los servidores.", true),
       );
     }
+  }
+  if (key === "notifications") {
+    if (validList) {
+      renderNotifications(result.value);
+      elements.notificationsCount.textContent = `${result.value.length} resultados`;
+    } else {
+      elements.notificationsBody.replaceChildren(stateRow(7, "No fue posible cargar las notificaciones.", true));
+    }
+  }
+  if (key === "notificationSummary" && result.status === "fulfilled") {
+    renderNotificationSummary(result.value);
   }
 }
 

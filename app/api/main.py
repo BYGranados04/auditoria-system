@@ -16,6 +16,8 @@ from app.auth.config import AuthSettings, load_auth_settings
 from app.auth.repository import AuthenticatedSession, AuthRepository
 from app.auth.web import AuthManager, build_auth_router
 from app.core.config import AgentSettings, load_agent_settings
+from app.notifications.repository import NotificationRepository
+from app.notifications.web import build_notification_router
 from app.storage.event_repository import EventRepository
 
 Severity = Literal[
@@ -134,6 +136,12 @@ def create_app(
     )
     application.include_router(build_auth_router(auth_manager))
     application.include_router(build_agent_router(auth_manager))
+    application.include_router(
+        build_notification_router(
+            auth_manager,
+            NotificationRepository(resolved_settings.state_dir / "notifications.db"),
+        )
+    )
 
     @application.get(
         "/login",
@@ -149,6 +157,11 @@ def create_app(
             headers=_html_security_headers(),
         )
 
+    @application.get(
+        "/dashboard/notifications",
+        include_in_schema=False,
+        response_class=FileResponse,
+    )
     @application.get(
         "/dashboard/users",
         include_in_schema=False,
