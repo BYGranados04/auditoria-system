@@ -9,8 +9,10 @@ const elements = {
   apiIndicator: document.querySelector("#api-indicator"),
   apiStatus: document.querySelector("#api-status"),
   automaticBlocking: document.querySelector("#automatic-blocking"),
+  defenseApiStatus: document.querySelector("#status-api"),
+  defenseHostname: document.querySelector("#status-hostname"),
   detectionsCount: document.querySelector("#detections-count"),
-  detectionsList: document.querySelector("#detections-list"),
+  detectionsBody: document.querySelector("#detections-body"),
   eventsBody: document.querySelector("#events-body"),
   eventsCount: document.querySelector("#events-count"),
   globalAlert: document.querySelector("#global-alert"),
@@ -19,7 +21,7 @@ const elements = {
   refreshButton: document.querySelector("#refresh-button"),
   responseMode: document.querySelector("#response-mode"),
   responsesCount: document.querySelector("#responses-count"),
-  responsesList: document.querySelector("#responses-list"),
+  responsesBody: document.querySelector("#responses-body"),
 };
 
 function makeElement(tag, className, value) {
@@ -55,6 +57,7 @@ function severityBadge(severity) {
 function setApiState(state, message) {
   elements.apiIndicator.className = `status-dot is-${state}`;
   elements.apiStatus.textContent = message;
+  elements.defenseApiStatus.textContent = message;
 }
 
 function setMetric(name, value) {
@@ -70,6 +73,7 @@ function renderPill(container, text, style = "neutral") {
 
 function renderStatus(status) {
   elements.hostname.textContent = displayValue(status.hostname);
+  elements.defenseHostname.textContent = displayValue(status.hostname);
   setMetric("total", status.total_events);
   setMetric("critical", status.by_severity?.critical ?? 0);
   setMetric("high", status.by_severity?.high ?? 0);
@@ -78,9 +82,9 @@ function renderStatus(status) {
   setMetric("blocks", status.live_response_blocks);
 
   const modeLabels = {
-    audit_only: "AUDIT ONLY",
-    assisted: "ASISTIDO",
-    automatic: "AUTOMÁTICO",
+    audit_only: "Solo auditoría",
+    assisted: "Asistido",
+    automatic: "Automático",
   };
   const modeStyle = status.response_mode === "automatic" ? "warning" : "neutral";
   renderPill(
@@ -90,7 +94,7 @@ function renderStatus(status) {
   );
   renderPill(
     elements.automaticBlocking,
-    status.automatic_blocking_enabled ? "HABILITADO" : "DESHABILITADO",
+    status.automatic_blocking_enabled ? "Habilitado" : "Deshabilitado",
     status.automatic_blocking_enabled ? "warning" : "neutral",
   );
 }
@@ -101,8 +105,10 @@ function renderStatusError() {
     metric.textContent = "—";
     metric.classList.remove("loading-value");
   });
-  renderPill(elements.responseMode, "NO DISPONIBLE", "neutral");
-  renderPill(elements.automaticBlocking, "NO DISPONIBLE", "neutral");
+  renderPill(elements.responseMode, "No disponible", "neutral");
+  renderPill(elements.automaticBlocking, "No disponible", "neutral");
+  elements.hostname.textContent = "—";
+  elements.defenseHostname.textContent = "—";
 }
 
 function renderEvents(events) {
@@ -135,15 +141,6 @@ function renderEvents(events) {
   elements.eventsBody.replaceChildren(...rows);
 }
 
-function detailItem(label, value) {
-  const wrapper = document.createElement("div");
-  wrapper.append(
-    makeElement("span", "", label),
-    makeElement("strong", "", displayValue(value)),
-  );
-  return wrapper;
-}
-
 function evidenceObject(event) {
   if (
     event.evidence !== null &&
@@ -158,77 +155,57 @@ function evidenceObject(event) {
 function renderDetections(detections) {
   elements.detectionsCount.textContent = `${detections.length} recientes`;
   if (detections.length === 0) {
-    elements.detectionsList.replaceChildren(
-      makeElement("div", "list-state", "No hay detecciones registradas."),
-    );
+    const cell = makeElement("td", "state-cell", "No hay detecciones registradas.");
+    cell.colSpan = 5;
+    const row = document.createElement("tr");
+    row.append(cell);
+    elements.detectionsBody.replaceChildren(row);
     return;
   }
 
-  const cards = detections.map((detection) => {
+  const rows = detections.map((detection) => {
     const evidence = evidenceObject(detection);
-    const card = makeElement("article", "activity-card");
-    const headline = makeElement("div", "activity-topline");
-    const title = makeElement("div", "activity-title");
-    title.append(
-      severityBadge(detection.severity),
-      makeElement("span", "event-type", displayValue(detection.event_type)),
+    const row = document.createElement("tr");
+    const severity = document.createElement("td");
+    severity.append(severityBadge(detection.severity));
+    row.append(
+      severity,
+      makeElement("td", "event-type", displayValue(detection.event_type)),
+      makeElement("td", "monospace", displayValue(evidence.source_ip)),
+      makeElement("td", "timestamp", formatTimestamp(detection.timestamp)),
+      makeElement("td", "", displayValue(detection.description)),
     );
-    headline.append(
-      title,
-      makeElement("time", "timestamp", formatTimestamp(detection.timestamp)),
-    );
-    const details = makeElement("div", "detail-grid");
-    if (evidence.source_ip) {
-      details.append(detailItem("IP origen", evidence.source_ip));
-    }
-    details.append(
-      detailItem("Host", detection.hostname),
-      detailItem("Fuente", detection.source),
-    );
-    card.append(
-      headline,
-      makeElement("p", "", displayValue(detection.description)),
-      details,
-    );
-    return card;
+    return row;
   });
-  elements.detectionsList.replaceChildren(...cards);
+  elements.detectionsBody.replaceChildren(...rows);
 }
 
 function renderResponses(responses) {
   elements.responsesCount.textContent = `${responses.length} recientes`;
   if (responses.length === 0) {
-    elements.responsesList.replaceChildren(
-      makeElement("div", "list-state", "No hay respuestas registradas."),
-    );
+    const cell = makeElement("td", "state-cell", "No hay respuestas registradas.");
+    cell.colSpan = 7;
+    const row = document.createElement("tr");
+    row.append(cell);
+    elements.responsesBody.replaceChildren(row);
     return;
   }
 
-  const cards = responses.map((response) => {
+  const rows = responses.map((response) => {
     const evidence = evidenceObject(response);
-    const card = makeElement("article", "activity-card");
-    const headline = makeElement("div", "activity-topline");
-    headline.append(
-      makeElement("span", "event-type", displayValue(response.event_type)),
-      makeElement("time", "timestamp", formatTimestamp(response.timestamp)),
+    const row = document.createElement("tr");
+    row.append(
+      makeElement("td", "timestamp", formatTimestamp(response.timestamp)),
+      makeElement("td", "event-type", displayValue(response.event_type)),
+      makeElement("td", "monospace", displayValue(evidence.action)),
+      makeElement("td", "", displayValue(evidence.status)),
+      makeElement("td", "monospace", displayValue(evidence.target_ip)),
+      makeElement("td", "", displayValue(evidence.executed)),
+      makeElement("td", "", displayValue(evidence.reason, response.description)),
     );
-    const details = makeElement("div", "detail-grid");
-    details.append(
-      detailItem("Acción", evidence.action),
-      detailItem("Estado", evidence.status),
-      detailItem("IP objetivo", evidence.target_ip),
-      detailItem("Ejecutado", evidence.executed),
-      detailItem("Modo", evidence.mode),
-      detailItem("Host", response.hostname),
-    );
-    card.append(
-      headline,
-      makeElement("p", "", displayValue(evidence.reason, response.description)),
-      details,
-    );
-    return card;
+    return row;
   });
-  elements.responsesList.replaceChildren(...cards);
+  elements.responsesBody.replaceChildren(...rows);
 }
 
 function renderSectionError(container, columns, message) {
@@ -284,8 +261,8 @@ async function refreshDashboard() {
       renderDetections(detections.value);
     } else {
       renderSectionError(
-        elements.detectionsList,
-        0,
+        elements.detectionsBody,
+        5,
         "No fue posible cargar las detecciones.",
       );
     }
@@ -293,8 +270,8 @@ async function refreshDashboard() {
       renderResponses(responses.value);
     } else {
       renderSectionError(
-        elements.responsesList,
-        0,
+        elements.responsesBody,
+        7,
         "No fue posible cargar las respuestas.",
       );
     }
@@ -312,7 +289,6 @@ async function refreshDashboard() {
 
     if (successes > 0) {
       elements.lastUpdated.textContent = new Intl.DateTimeFormat("es-GT", {
-        dateStyle: "short",
         timeStyle: "medium",
       }).format(new Date());
     }
