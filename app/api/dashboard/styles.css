@@ -146,16 +146,27 @@ tbody tr:hover { background: var(--surface-hover); }
 .users-table th:nth-child(5), .users-table td:nth-child(5) { width: 145px; }
 .users-table th:nth-child(6), .users-table td:nth-child(6) { width: 100px; }
 .table-select { width: 100%; min-height: 28px; border: 1px solid var(--border-strong); border-radius: 3px; background: #121518; color: var(--text); font-size: 10px; }
-.host-assignment { display: flex; align-items: center; gap: 6px; }
-.host-select { min-height: 48px; }
-.global-access { color: var(--muted); font-size: 10px; }
-.host-global summary { margin-bottom: 4px; cursor: pointer; }
-.host-global:not([open]) .host-select { display: none; }
-.user-form select[multiple] { min-height: 58px; padding: 4px 9px; }
 .table-action { min-height: 27px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 3px; background: transparent; color: var(--muted); cursor: pointer; font-size: 9px; }
 .table-action:hover, .table-action:focus-visible { border-color: #647078; color: var(--text); outline: none; }
 .user-active { color: #9bc4ab; }
 .user-inactive { color: var(--subtle); }
+.server-heading { align-items: center; margin-bottom: 14px; }
+.server-heading > div { display: flex; align-items: baseline; gap: 10px; }
+.primary-action { min-height: 32px; padding: 0 12px; border: 1px solid #4d5b62; border-radius: 4px; background: #262c30; color: var(--text); cursor: pointer; font-size: 10px; }
+.primary-action:hover, .primary-action:focus-visible { border-color: #647078; outline: none; background: #2c3237; }
+.primary-action:disabled { cursor: wait; opacity: .55; }
+.registration-panel { margin-bottom: 14px; padding: 13px 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.registration-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.registration-header h3 { margin: 0 0 4px; font-size: 12px; font-weight: 620; }
+.registration-header p, .registration-expiry { margin: 0; color: var(--muted); font-size: 10px; }
+.registration-command { display: block; overflow-x: auto; margin: 11px 0 9px; padding: 10px; border: 1px solid var(--border-strong); border-radius: 4px; background: #101316; color: #cbd2d5; font: 10px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: nowrap; }
+.servers-table { min-width: 760px; }
+.servers-table th:nth-child(1), .servers-table td:nth-child(1) { width: 210px; }
+.servers-table th:nth-child(2), .servers-table td:nth-child(2) { width: 190px; }
+.servers-table th:nth-child(3), .servers-table td:nth-child(3) { width: 105px; }
+.servers-table th:nth-child(4), .servers-table td:nth-child(4), .servers-table th:nth-child(5), .servers-table td:nth-child(5) { width: 160px; }
+.agent-online { color: #9bc4ab; }
+.agent-offline { color: var(--subtle); }
 .timestamp { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .event-type { color: #aeb5ba; font-size: 10px; word-break: break-word; }
 .severity-badge { display: inline-block; padding: 2px 5px; border-radius: 3px; font-size: 8px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }

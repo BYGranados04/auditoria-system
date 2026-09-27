@@ -19,12 +19,18 @@ def create_test_auth_repository(
         tmp_path / "auth" / "auth.db",
         scrypt_parameters=TEST_SCRYPT,
     )
-    repository.create_user(
+    user = repository.create_user(
         username=TEST_USERNAME,
         password=TEST_PASSWORD,
         role=role,
-        hostnames=(hostnames or ("server-test",)) if role == "viewer" else None,
     )
+    if role == "viewer":
+        for hostname in hostnames or ("server-test",):
+            registration = repository.create_agent_registration_token(int(user["id"]))
+            repository.enroll_agent(
+                registration_token=registration.token,
+                hostname=hostname,
+            )
     return repository
 
 

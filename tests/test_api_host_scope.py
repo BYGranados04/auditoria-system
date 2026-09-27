@@ -1,4 +1,3 @@
-import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -80,14 +79,25 @@ def build_scoped_application(
             username=username,
             password=TEST_PASSWORD,
             role=role,
-            hostnames=hostnames,
         )
         users[username] = int(user["id"])
+        if hostnames:
+            for hostname in hostnames:
+                registration = auth_repository.create_agent_registration_token(
+                    int(user["id"])
+                )
+                auth_repository.enroll_agent(
+                    registration_token=registration.token,
+                    hostname=hostname,
+                )
 
     application = create_app(
         settings=settings,
         repository=EventRepository(settings.database_file, read_only=True),
-        auth_settings=AuthSettings(database_file=auth_database),
+        auth_settings=AuthSettings(
+            database_file=auth_database,
+            central_url="https://central.example",
+        ),
         auth_repository=auth_repository,
     )
     return TestClient(application), auth_repository, settings.database_file, users
@@ -130,29 +140,23 @@ def test_viewer_scope_blocks_cross_host_reads_and_admin_endpoints(tmp_path) -> N
     assert status.json()["live_response_blocks"] == 1
     assert status.json()["hostname"] == "host-a"
 
-    assert viewer.get("/admin/hosts").status_code == 403
+    agents = viewer.get("/agents")
+    assert agents.status_code == 200
+    assert [agent["hostname"] for agent in agents.json()] == ["host-a"]
     assert viewer.get("/admin/users").status_code == 403
-    assert viewer.post(
-        "/admin/users/1/hosts",
-        headers=csrf_headers(me),
-        json={"hostnames": ["host-a"]},
-    ).status_code == 403
 
-
-def test_superadmin_manages_scopes_and_changes_take_effect_immediately(
+def test_superadmin_sees_all_agents_and_new_viewer_starts_empty(
     tmp_path,
 ) -> None:
-    admin, _, _, users = build_scoped_application(tmp_path)
+    admin, _, _, _ = build_scoped_application(tmp_path)
     admin_login = login_as(admin, "admin")
     headers = csrf_headers(admin_login)
-    viewer = TestClient(admin.app)
-    login_as(viewer, "viewer-a")
 
     assert len(admin.get("/events").json()) == 6
-    assert admin.get("/admin/hosts").json() == [
-        {"hostname": "host-a"},
-        {"hostname": "host-b"},
-    ]
+
+    agents = admin.get("/agents")
+    assert agents.status_code == 200
+    assert {agent["hostname"] for agent in agents.json()} == {"host-a", "host-b"}
 
     created = admin.post(
         "/admin/users",
@@ -161,63 +165,49 @@ def test_superadmin_manages_scopes_and_changes_take_effect_immediately(
             "username": "new-viewer",
             "password": TEST_PASSWORD,
             "role": "viewer",
-            "hostnames": ["host-a", "host-b"],
         },
     )
     assert created.status_code == 201
-    assert created.json()["hostnames"] == ["host-a", "host-b"]
+    assert created.json()["server_count"] == 0
 
-    changed = admin.post(
-        f"/admin/users/{users['viewer-a']}/hosts",
-        headers=headers,
-        json={"hostnames": ["host-b"]},
+    viewer = TestClient(admin.app)
+    me = login_as(viewer, "new-viewer")
+    assert me["hostnames"] == []
+    assert viewer.get("/agents").json() == []
+    assert viewer.get("/events").json() == []
+
+def test_agent_enrollment_adds_hostname_to_its_owner_scope(tmp_path) -> None:
+    root_client, _, _, _ = build_scoped_application(tmp_path)
+    viewer = TestClient(root_client.app)
+    signed_in = login_as(viewer, "viewer-a")
+
+    registration = viewer.post(
+        "/agents/registration-token",
+        headers=csrf_headers(signed_in),
+        json={},
     )
-    assert changed.status_code == 200
-    assert changed.json()["hostnames"] == ["host-b"]
-    assert viewer.get("/events").status_code == 401
+    assert registration.status_code == 200
 
-    me = login_as(viewer, "viewer-a")
-    assert me["hostnames"] == ["host-b"]
-    assert {event["hostname"] for event in viewer.get("/events").json()} == {
-        "host-b"
-    }
-
-
-def test_viewer_creation_and_assignment_require_known_nonempty_hosts(tmp_path) -> None:
-    admin, _, _, users = build_scoped_application(tmp_path)
-    signed_in = login_as(admin, "admin")
-    headers = csrf_headers(signed_in)
-    base_payload = {
-        "password": TEST_PASSWORD,
-        "role": "viewer",
-    }
-
-    empty = admin.post(
-        "/admin/users",
-        headers=headers,
-        json={**base_payload, "username": "empty-viewer", "hostnames": []},
-    )
-    unknown = admin.post(
-        "/admin/users",
-        headers=headers,
+    enrolled = root_client.post(
+        "/agent/enroll",
         json={
-            **base_payload,
-            "username": "unknown-viewer",
-            "hostnames": ["host-z"],
+            "registration_token": registration.json()["token"],
+            "hostname": "host-a-extra",
         },
     )
-    invalid_update = admin.post(
-        f"/admin/users/{users['viewer-a']}/hosts",
-        headers=headers,
-        json={"hostnames": ["host-z"]},
-    )
+    assert enrolled.status_code == 200
 
-    assert empty.status_code == 422
-    assert unknown.status_code == 422
-    assert invalid_update.status_code == 422
+    assert [agent["hostname"] for agent in viewer.get("/agents").json()] == [
+        "host-a",
+        "host-a-extra",
+    ]
+    assert viewer.get("/auth/me").json()["hostnames"] == [
+        "host-a",
+        "host-a-extra",
+    ]
 
 
-def test_superadmin_demotion_requires_scope_and_invalidates_session(tmp_path) -> None:
+def test_superadmin_demotion_invalidates_session(tmp_path) -> None:
     admin, _, _, _ = build_scoped_application(tmp_path)
     signed_in = login_as(admin, "admin")
     headers = csrf_headers(signed_in)
@@ -228,71 +218,64 @@ def test_superadmin_demotion_requires_scope_and_invalidates_session(tmp_path) ->
             "username": "secondary-admin",
             "password": TEST_PASSWORD,
             "role": "superadmin",
-            "hostnames": [],
         },
     )
     user_id = created.json()["id"]
     secondary = TestClient(admin.app)
     login_as(secondary, "secondary-admin")
 
-    rejected = admin.post(
+    changed = admin.post(
         f"/admin/users/{user_id}/role",
         headers=headers,
         json={"role": "viewer"},
     )
-    changed = admin.post(
-        f"/admin/users/{user_id}/role",
-        headers=headers,
-        json={"role": "viewer", "hostnames": ["host-a"]},
-    )
 
-    assert rejected.status_code == 409
     assert changed.status_code == 200
-    assert changed.json()["hostnames"] == ["host-a"]
+    assert changed.json()["server_count"] == 0
     assert secondary.get("/status").status_code == 401
 
 
-def test_empty_scope_returns_no_information_and_role_change_ends_session(
-    tmp_path,
-) -> None:
-    admin, repository, _, users = build_scoped_application(tmp_path)
-    with sqlite3.connect(repository.database_path) as connection:
-        connection.execute(
-            "DELETE FROM user_host_access WHERE user_id = ?",
-            (users["viewer-b"],),
-        )
+def test_viewer_without_agents_receives_no_audit_information(tmp_path) -> None:
+    admin, _, _, _ = build_scoped_application(tmp_path)
+    admin_login = login_as(admin, "admin")
+    created = admin.post(
+        "/admin/users",
+        headers=csrf_headers(admin_login),
+        json={
+            "username": "viewer-without-agents",
+            "password": TEST_PASSWORD,
+            "role": "viewer",
+        },
+    )
+    assert created.status_code == 201
 
     viewer = TestClient(admin.app)
-    login_as(viewer, "viewer-b")
+    login_as(viewer, "viewer-without-agents")
     assert viewer.get("/events").json() == []
     assert viewer.get("/detections").json() == []
     assert viewer.get("/responses").json() == []
     assert viewer.get("/status").json()["total_events"] == 0
-    assert viewer.get("/events", params={"hostname": "host-b"}).status_code == 403
-
-    admin_login = login_as(admin, "admin")
-    promoted = admin.post(
-        f"/admin/users/{users['viewer-b']}/role",
-        headers=csrf_headers(admin_login),
-        json={"role": "superadmin"},
-    )
-    assert promoted.status_code == 200
-    assert promoted.json()["hostnames"] is None
-    assert viewer.get("/status").status_code == 401
+    assert viewer.get("/events", params={"hostname": "host-a"}).status_code == 403
 
 
-def test_scope_operations_leave_audit_database_unchanged(tmp_path) -> None:
-    admin, _, audit_database, users = build_scoped_application(tmp_path)
+def test_auth_and_agent_operations_leave_audit_database_unchanged(tmp_path) -> None:
+    admin, _, audit_database, _ = build_scoped_application(tmp_path)
     before = audit_database.read_bytes()
     signed_in = login_as(admin, "admin")
 
-    assert admin.get("/events", params={"hostname": "host-a"}).status_code == 200
-    assert admin.get("/admin/hosts").status_code == 200
-    response = admin.post(
-        f"/admin/users/{users['viewer-a']}/hosts",
+    registration = admin.post(
+        "/agents/registration-token",
         headers=csrf_headers(signed_in),
-        json={"hostnames": ["host-a", "host-b"]},
+        json={},
+    )
+    assert registration.status_code == 200
+    enrolled = admin.post(
+        "/agent/enroll",
+        json={
+            "registration_token": registration.json()["token"],
+            "hostname": "admin-host",
+        },
     )
 
-    assert response.status_code == 200
+    assert enrolled.status_code == 200
     assert audit_database.read_bytes() == before

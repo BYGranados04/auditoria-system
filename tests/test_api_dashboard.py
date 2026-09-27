@@ -161,7 +161,8 @@ def test_dashboard_uses_supported_filters_and_overview_limits(tmp_path: Path) ->
     assert 'name="category"' in html
     assert 'name="event_type"' in html
     assert 'name="hostname"' in html
-    assert "Servidor(es)" in html
+    assert "Mis servidores" in html
+    assert "Conectar servidor" in html
     assert 'fetchJson("/events?limit=5")' in script
     assert 'fetchJson("/detections?limit=4")' in script
     assert 'endpointWithFilters("/events"' in script

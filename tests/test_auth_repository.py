@@ -26,7 +26,6 @@ def test_password_with_eight_characters_is_accepted(tmp_path) -> None:
         username="minimum-password",
         password="12345678",
         role="viewer",
-        hostnames=("server-test",),
     )
 
     assert repository.authenticate("minimum-password", "12345678") == user
@@ -85,7 +84,6 @@ def test_expired_session_is_rejected(tmp_path) -> None:
         username="viewer-user",
         password=TEST_PASSWORD,
         role="viewer",
-        hostnames=("server-test",),
     )
     start = datetime(2026, 1, 1, tzinfo=UTC)
     session = repository.create_session(
@@ -178,7 +176,7 @@ def test_migrates_v1_auth_database_without_losing_users_or_sessions(tmp_path) ->
     assert preserved_session is not None
     assert preserved_session.username == "legacy-admin"
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
         assert connection.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
         assert connection.execute(
@@ -189,39 +187,68 @@ def test_migrates_v1_auth_database_without_losing_users_or_sessions(tmp_path) ->
         ).fetchone() == ("user_host_access",)
 
 
-def test_host_assignments_are_unique_transactional_and_invalidate_sessions(
+def test_migrates_v2_legacy_host_access_without_using_it_for_ownership(
     tmp_path,
 ) -> None:
-    repository = AuthRepository(tmp_path / "auth.db", scrypt_parameters=TEST_SCRYPT)
-    viewer = repository.create_user(
-        username="scoped-viewer",
-        password=TEST_PASSWORD,
-        role="viewer",
-        hostnames=("host-a", "host-a", "host-b"),
+    database = tmp_path / "auth.db"
+    timestamp = "2026-09-26T00:00:00+00:00"
+    with sqlite3.connect(database) as connection:
+        AuthRepository._migrate_to_v1(connection)
+        AuthRepository._migrate_to_v2(connection)
+        connection.execute("PRAGMA user_version = 2")
+        connection.execute(
+            """
+            INSERT INTO users (
+                username, password_hash, password_salt,
+                scrypt_n, scrypt_r, scrypt_p, scrypt_dklen,
+                role, active, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+            """,
+            (
+                "legacy-viewer",
+                b"legacy-hash",
+                b"legacy-salt",
+                1024,
+                8,
+                1,
+                32,
+                "viewer",
+                timestamp,
+                timestamp,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO user_host_access (user_id, hostname, created_at)
+            VALUES (1, 'legacy-host', ?)
+            """,
+            (timestamp,),
+        )
+
+    repository = AuthRepository(database, scrypt_parameters=TEST_SCRYPT)
+    repository.initialize()
+    registration = repository.create_agent_registration_token(1)
+    repository.enroll_agent(
+        registration_token=registration.token,
+        hostname="agent-host",
     )
-    session = repository.create_session(int(viewer["id"]), session_seconds=28_800)
 
-    assert viewer["hostnames"] == ["host-a", "host-b"]
-    updated = repository.replace_user_hostnames(
-        int(viewer["id"]),
-        hostnames=("host-b",),
-    )
-
-    assert updated["hostnames"] == ["host-b"]
-    assert repository.get_session(session.token) is None
-    with pytest.raises(AuthValidationError, match="al menos un servidor"):
-        repository.replace_user_hostnames(int(viewer["id"]), hostnames=())
-
-    with sqlite3.connect(repository.database_path) as connection:
-        with pytest.raises(sqlite3.IntegrityError):
-            connection.execute(
-                """
-                INSERT INTO user_host_access (user_id, hostname, created_at)
-                VALUES (?, ?, ?)
-                """,
-                (
-                    int(viewer["id"]),
-                    "host-b",
-                    "2026-09-26T00:00:00+00:00",
-                ),
+    with sqlite3.connect(database) as connection:
+        table_names = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
             )
+        }
+        legacy_hostnames = connection.execute(
+            "SELECT hostname FROM user_host_access WHERE user_id = 1"
+        ).fetchall()
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+
+    assert legacy_hostnames == [("legacy-host",)]
+    assert {
+        "agents",
+        "agent_registration_tokens",
+        "agent_credentials",
+    } <= table_names
+    assert repository.get_owned_agent_hostnames(1) == ("agent-host",)
