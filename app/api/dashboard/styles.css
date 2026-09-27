@@ -132,12 +132,20 @@ tbody tr:hover { background: var(--surface-hover); }
 .responses-table th:nth-child(4), .responses-table td:nth-child(4) { width: 115px; }
 .responses-table th:nth-child(5), .responses-table td:nth-child(5) { width: 100px; }
 .responses-table th:nth-child(6), .responses-table td:nth-child(6) { width: 80px; }
-.users-table th:nth-child(1), .users-table td:nth-child(1) { width: 180px; }
-.users-table th:nth-child(2), .users-table td:nth-child(2) { width: 145px; }
-.users-table th:nth-child(3), .users-table td:nth-child(3) { width: 90px; }
-.users-table th:nth-child(4), .users-table td:nth-child(4) { width: 160px; }
-.users-table th:nth-child(5), .users-table td:nth-child(5) { width: 100px; }
+.users-table { min-width: 980px; }
+.users-table th:nth-child(1), .users-table td:nth-child(1) { width: 150px; }
+.users-table th:nth-child(2), .users-table td:nth-child(2) { width: 125px; }
+.users-table th:nth-child(3), .users-table td:nth-child(3) { width: 260px; }
+.users-table th:nth-child(4), .users-table td:nth-child(4) { width: 85px; }
+.users-table th:nth-child(5), .users-table td:nth-child(5) { width: 145px; }
+.users-table th:nth-child(6), .users-table td:nth-child(6) { width: 100px; }
 .table-select { width: 100%; min-height: 28px; border: 1px solid var(--border-strong); border-radius: 3px; background: #121518; color: var(--text); font-size: 10px; }
+.host-assignment { display: flex; align-items: center; gap: 6px; }
+.host-select { min-height: 48px; }
+.global-access { color: var(--muted); font-size: 10px; }
+.host-global summary { margin-bottom: 4px; cursor: pointer; }
+.host-global:not([open]) .host-select { display: none; }
+.user-form select[multiple] { min-height: 58px; padding: 4px 9px; }
 .table-action { min-height: 27px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 3px; background: transparent; color: var(--muted); cursor: pointer; font-size: 9px; }
 .table-action:hover, .table-action:focus-visible { border-color: #647078; color: var(--text); outline: none; }
 .user-active { color: #9bc4ab; }
@@ -166,7 +174,7 @@ tbody tr:hover { background: var(--surface-hover); }
 @media (max-width: 760px) {
   .sidebar { inset: auto 0 0; width: auto; height: 56px; padding: 5px 8px; border-top: 1px solid var(--border); border-right: 0; }
   .sidebar-title, .sidebar-note { display: none; }
-  .sidebar nav { grid-template-columns: repeat(4, 1fr); }
+  .sidebar nav { grid-template-columns: repeat(5, 1fr); }
   .nav-item { flex-direction: column; justify-content: center; gap: 0; min-height: 45px; padding: 2px 4px; font-size: 9px; }
   .nav-item.is-active::before { inset: auto auto 0; width: 28px; height: 2px; }
   .nav-icon { line-height: 16px; }

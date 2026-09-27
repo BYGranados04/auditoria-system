@@ -124,6 +124,7 @@ def create_app(
         resolved_auth_repository,
         resolved_auth_settings,
         clock=clock,
+        list_known_hostnames=resolved_repository.list_known_hostnames,
     )
 
     application = FastAPI(
@@ -234,7 +235,7 @@ def create_app(
         tags=["system"],
     )
     def system_status(
-        _session: AuthenticatedSession = Depends(  # noqa: B008
+        session: AuthenticatedSession = Depends(  # noqa: B008
             auth_manager.require_authenticated
         ),
     ) -> StatusResponse:
@@ -245,10 +246,12 @@ def create_app(
             )
 
         try:
-            statistics = resolved_repository.statistics()
+            allowed_hostnames = auth_manager.get_allowed_hostnames(session)
+            statistics = resolved_repository.statistics(hostnames=allowed_hostnames)
 
             live_blocks = resolved_repository.list_live_response_blocks(
-                now=datetime.now(UTC)
+                now=datetime.now(UTC),
+                hostnames=allowed_hostnames,
             )
         except sqlite3.Error as exc:
             raise HTTPException(
@@ -261,10 +264,19 @@ def create_app(
             and resolved_settings.allow_temporary_ip_block
         )
 
+        if allowed_hostnames is None:
+            status_hostname = platform.node()
+        elif len(allowed_hostnames) == 1:
+            status_hostname = allowed_hostnames[0]
+        elif allowed_hostnames:
+            status_hostname = f"{len(allowed_hostnames)} servidores"
+        else:
+            status_hostname = "Sin servidores asignados"
+
         return StatusResponse(
             status="ok",
             service="auditoria-system-api",
-            hostname=platform.node(),
+            hostname=status_hostname,
             response_mode=(resolved_settings.response_mode),
             automatic_blocking_enabled=(automatic_blocking_enabled),
             total_events=statistics["total"],
@@ -289,7 +301,7 @@ def create_app(
             ge=1,
             le=1000,
         ),
-        _session: AuthenticatedSession = Depends(  # noqa: B008
+        session: AuthenticatedSession = Depends(  # noqa: B008
             auth_manager.require_authenticated
         ),
     ) -> list[EventResponse]:
@@ -315,10 +327,15 @@ def create_app(
             )
 
         try:
+            allowed_hostnames = auth_manager.resolve_hostname_scope(
+                session,
+                hostname,
+            )
             rows = resolved_repository.list_events(
                 severity=severity,
                 event_type=event_type,
                 hostname=hostname,
+                hostnames=allowed_hostnames,
                 category=category,
                 since=since,
                 until=until,
@@ -361,7 +378,7 @@ def create_app(
             ge=1,
             le=1000,
         ),
-        _session: AuthenticatedSession = Depends(  # noqa: B008
+        session: AuthenticatedSession = Depends(  # noqa: B008
             auth_manager.require_authenticated
         ),
     ) -> list[EventResponse]:
@@ -387,10 +404,15 @@ def create_app(
             )
 
         try:
+            allowed_hostnames = auth_manager.resolve_hostname_scope(
+                session,
+                hostname,
+            )
             rows = resolved_repository.list_events(
                 severity=severity,
                 event_type=event_type,
                 hostname=hostname,
+                hostnames=allowed_hostnames,
                 category="detection",
                 since=since,
                 until=until,
@@ -432,7 +454,7 @@ def create_app(
             ge=1,
             le=1000,
         ),
-        _session: AuthenticatedSession = Depends(  # noqa: B008
+        session: AuthenticatedSession = Depends(  # noqa: B008
             auth_manager.require_authenticated
         ),
     ) -> list[EventResponse]:
@@ -458,6 +480,10 @@ def create_app(
             )
 
         try:
+            allowed_hostnames = auth_manager.resolve_hostname_scope(
+                session,
+                hostname,
+            )
             if event_type is None:
                 rows = resolved_repository.list_events(
                     event_types=(
@@ -465,6 +491,7 @@ def create_app(
                         "RESPONSE_EXECUTION",
                     ),
                     hostname=hostname,
+                    hostnames=allowed_hostnames,
                     category="response",
                     since=since,
                     until=until,
@@ -474,6 +501,7 @@ def create_app(
                 rows = resolved_repository.list_events(
                     event_type=event_type,
                     hostname=hostname,
+                    hostnames=allowed_hostnames,
                     category="response",
                     since=since,
                     until=until,

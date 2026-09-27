@@ -14,12 +14,15 @@ const currentModule = MODULES[normalizedPath] ?? MODULES["/dashboard"];
 let refreshInProgress = false;
 let refreshTimerId = null;
 let authContext = null;
+let knownHosts = [];
 
 const elements = {
   apiIndicator: document.querySelector("#api-indicator"),
   apiStatus: document.querySelector("#api-status"),
   automaticBlocking: document.querySelector("#automatic-blocking"),
   createUserForm: document.querySelector("#create-user-form"),
+  createUserHostnames: document.querySelector("#create-user-hostnames"),
+  createUserRole: document.querySelector("#create-user-role"),
   currentUser: document.querySelector("#current-user"),
   defenseApiStatus: document.querySelector("#status-api"),
   defenseHostname: document.querySelector("#status-hostname"),
@@ -112,7 +115,45 @@ async function loadAuthContext() {
     throw new Error("Authentication required");
   }
   authContext = await response.json();
-  elements.currentUser.textContent = `${authContext.username} · ${authContext.role}`;
+  if (authContext.role === "superadmin") {
+    try {
+      const hostsResponse = await fetchJson("/admin/hosts");
+      knownHosts = hostsResponse.map((entry) => entry.hostname);
+    } catch (_error) {
+      knownHosts = [];
+    }
+  } else {
+    knownHosts = Array.isArray(authContext.hostnames) ? authContext.hostnames : [];
+  }
+  const scope = authContext.role === "superadmin"
+    ? "Todos los servidores"
+    : `${knownHosts.length} ${knownHosts.length === 1 ? "servidor" : "servidores"}`;
+  elements.currentUser.textContent = `${authContext.username} · ${authContext.role} · ${scope}`;
+  populateHostnameControls();
+}
+
+function appendHostOptions(select, selected = []) {
+  const selectedHosts = new Set(selected);
+  knownHosts.forEach((hostname) => {
+    const option = makeElement("option", "", hostname);
+    option.value = hostname;
+    option.selected = selectedHosts.has(hostname);
+    select.append(option);
+  });
+}
+
+function selectedHostnames(select) {
+  return Array.from(select.selectedOptions, (option) => option.value);
+}
+
+function populateHostnameControls() {
+  document.querySelectorAll("[data-hostname-filter]").forEach((select) => {
+    const firstOption = select.querySelector("option");
+    select.replaceChildren(firstOption);
+    appendHostOptions(select);
+  });
+  elements.createUserHostnames.replaceChildren();
+  appendHostOptions(elements.createUserHostnames);
 }
 
 function populateFiltersFromLocation() {
@@ -301,11 +342,17 @@ async function authenticatedPost(path, body) {
 function renderUsers(users) {
   elements.usersCount.textContent = `${users.length} usuarios`;
   if (users.length === 0) {
-    elements.usersBody.replaceChildren(stateRow(5, "No hay usuarios registrados."));
+    elements.usersBody.replaceChildren(stateRow(6, "No hay usuarios registrados."));
     return;
   }
   const rows = users.map((user) => {
     const row = document.createElement("tr");
+    const hostSelect = document.createElement("select");
+    hostSelect.className = "table-select host-select";
+    hostSelect.multiple = true;
+    hostSelect.setAttribute("aria-label", `Servidores de ${user.username}`);
+    appendHostOptions(hostSelect, user.hostnames ?? []);
+
     const roleSelect = document.createElement("select");
     roleSelect.className = "table-select";
     ["viewer", "superadmin"].forEach((role) => {
@@ -317,9 +364,13 @@ function renderUsers(users) {
     roleSelect.setAttribute("aria-label", `Rol de ${user.username}`);
     roleSelect.addEventListener("change", async () => {
       try {
-        await authenticatedPost(`/admin/users/${user.id}/role`, {
+        const payload = {
           role: roleSelect.value,
-        });
+        };
+        if (roleSelect.value === "viewer") {
+          payload.hostnames = selectedHostnames(hostSelect);
+        }
+        await authenticatedPost(`/admin/users/${user.id}/role`, payload);
         await refreshAndReschedule();
       } catch (error) {
         roleSelect.value = user.role;
@@ -328,6 +379,36 @@ function renderUsers(users) {
     });
     const roleCell = document.createElement("td");
     roleCell.append(roleSelect);
+
+    const hostsCell = document.createElement("td");
+    if (user.role === "superadmin") {
+      const globalScope = document.createElement("details");
+      globalScope.className = "host-global";
+      globalScope.append(
+        makeElement("summary", "global-access", "Todos"),
+        hostSelect,
+      );
+      hostsCell.append(globalScope);
+    } else {
+      const saveHosts = makeElement("button", "table-action", "Guardar");
+      saveHosts.type = "button";
+      saveHosts.addEventListener("click", async () => {
+        try {
+          await authenticatedPost(`/admin/users/${user.id}/hosts`, {
+            hostnames: selectedHostnames(hostSelect),
+          });
+          showUsersAlert("Servidores actualizados. La sesión del usuario se cerró.", false);
+          await refreshAndReschedule();
+        } catch (error) {
+          showUsersAlert(error.message);
+        }
+      });
+      const assignment = document.createElement("div");
+      assignment.className = "host-assignment";
+      assignment.append(hostSelect, saveHosts);
+      hostsCell.append(assignment);
+    }
+
     const actionButton = makeElement(
       "button",
       "table-action",
@@ -349,6 +430,7 @@ function renderUsers(users) {
     row.append(
       makeElement("td", "monospace", user.username),
       roleCell,
+      hostsCell,
       makeElement("td", user.active ? "user-active" : "user-inactive", user.active ? "Activo" : "Inactivo"),
       makeElement("td", "timestamp", formatTimestamp(user.created_at)),
       actionCell,
@@ -441,7 +523,7 @@ function renderModuleResult(key, result) {
     if (validList) renderUsers(result.value);
     else {
       elements.usersBody.replaceChildren(
-        stateRow(5, "No fue posible cargar los usuarios.", true),
+        stateRow(6, "No fue posible cargar los usuarios.", true),
       );
     }
   }
@@ -548,14 +630,31 @@ function configureAccountActions() {
         username: data.get("username"),
         password: data.get("password"),
         role: data.get("role"),
+        hostnames: data.get("role") === "viewer"
+          ? selectedHostnames(elements.createUserHostnames)
+          : [],
       });
       elements.createUserForm.reset();
+      updateCreateUserScope();
       showUsersAlert("Usuario creado.", false);
       await refreshAndReschedule();
     } catch (error) {
       showUsersAlert(error.message);
     }
   });
+  elements.createUserRole.addEventListener("change", updateCreateUserScope);
+  updateCreateUserScope();
+}
+
+function updateCreateUserScope() {
+  const viewer = elements.createUserRole.value === "viewer";
+  elements.createUserHostnames.disabled = !viewer;
+  elements.createUserHostnames.required = viewer;
+  if (!viewer) {
+    Array.from(elements.createUserHostnames.options).forEach((option) => {
+      option.selected = false;
+    });
+  }
 }
 
 async function initializeDashboard() {

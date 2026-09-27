@@ -128,6 +128,8 @@ def test_dashboard_uses_supported_filters_and_overview_limits(tmp_path: Path) ->
     assert 'name="severity"' in html
     assert 'name="category"' in html
     assert 'name="event_type"' in html
+    assert 'name="hostname"' in html
+    assert "Servidor(es)" in html
     assert 'fetchJson("/events?limit=5")' in script
     assert 'fetchJson("/detections?limit=4")' in script
     assert 'endpointWithFilters("/events"' in script
@@ -165,6 +167,7 @@ def test_mutating_operations_are_limited_to_authentication_and_users(
         "/admin/users",
         "/admin/users/{user_id}/status",
         "/admin/users/{user_id}/role",
+        "/admin/users/{user_id}/hosts",
     }
 
     for route in application.routes:

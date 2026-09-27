@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -68,6 +68,20 @@ class EventRepository:
 
         finally:
             connection.close()
+
+    @staticmethod
+    def _hostname_scope(
+        hostnames: Iterable[str] | None,
+        *,
+        column: str = "hostname",
+    ) -> tuple[str | None, list[str]]:
+        if hostnames is None:
+            return None, []
+        normalized = tuple(dict.fromkeys(hostnames))
+        if not normalized:
+            return "1 = 0", []
+        placeholders = ", ".join("?" for _ in normalized)
+        return f"{column} IN ({placeholders})", list(normalized)
 
     def initialize(self) -> None:
         if self.read_only:
@@ -472,17 +486,21 @@ class EventRepository:
         self,
         *,
         now: datetime,
+        hostnames: Iterable[str] | None = None,
     ) -> list[dict[str, Any]]:
+        hostname_clause, hostname_parameters = self._hostname_scope(hostnames)
+        scope = f" AND {hostname_clause}" if hostname_clause else ""
         with self._connection() as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT *
                 FROM response_blocks
                 WHERE status IN ('PENDING', 'ACTIVE')
                   AND julianday(expires_at) > julianday(?)
+                  {scope}
                 ORDER BY expires_at ASC
                 """,
-                (now.astimezone(UTC).isoformat(),),
+                [now.astimezone(UTC).isoformat(), *hostname_parameters],
             ).fetchall()
 
         return [dict(row) for row in rows]
@@ -506,28 +524,39 @@ class EventRepository:
 
         return dict(row)
 
-    def statistics(self) -> dict[str, Any]:
+    def statistics(
+        self,
+        *,
+        hostnames: Iterable[str] | None = None,
+    ) -> dict[str, Any]:
+        hostname_clause, parameters = self._hostname_scope(hostnames)
+        where = f" WHERE {hostname_clause}" if hostname_clause else ""
         with self._connection() as connection:
             total = connection.execute(
-                "SELECT COUNT(*) AS total FROM events"
+                f"SELECT COUNT(*) AS total FROM events{where}",
+                parameters,
             ).fetchone()["total"]
 
             severity_rows = connection.execute(
-                """
+                f"""
                 SELECT severity, COUNT(*) AS total
                 FROM events
+                {where}
                 GROUP BY severity
                 ORDER BY severity
-                """
+                """,
+                parameters,
             ).fetchall()
 
             type_rows = connection.execute(
-                """
+                f"""
                 SELECT event_type, COUNT(*) AS total
                 FROM events
+                {where}
                 GROUP BY event_type
                 ORDER BY total DESC, event_type
-                """
+                """,
+                parameters,
             ).fetchall()
 
         return {
@@ -539,6 +568,18 @@ class EventRepository:
                 row["event_type"]: int(row["total"]) for row in type_rows
             },
         }
+
+    def list_known_hostnames(self) -> list[str]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT hostname
+                FROM events
+                WHERE hostname != ''
+                ORDER BY hostname
+                """
+            ).fetchall()
+        return [str(row["hostname"]) for row in rows]
 
     def count(self) -> int:
         with self._connection() as connection:
@@ -584,6 +625,7 @@ class EventRepository:
         event_type: str | None = None,
         event_types: tuple[str, ...] | None = None,
         hostname: str | None = None,
+        hostnames: Iterable[str] | None = None,
         category: str | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
@@ -612,6 +654,11 @@ class EventRepository:
         if hostname is not None:
             clauses.append("hostname = ?")
             parameters.append(hostname)
+
+        hostname_clause, hostname_parameters = self._hostname_scope(hostnames)
+        if hostname_clause is not None:
+            clauses.append(hostname_clause)
+            parameters.extend(hostname_parameters)
 
         if category is not None:
             clauses.append("category = ?")

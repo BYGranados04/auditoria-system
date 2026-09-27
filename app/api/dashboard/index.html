@@ -115,6 +115,7 @@
           <section class="module-section" aria-labelledby="events-title">
             <div class="module-heading"><h2 id="events-title">Eventos</h2><span id="events-count" class="panel-count">—</span></div>
             <form id="events-filters" class="filter-bar" action="/dashboard/events" method="get">
+              <label>Servidor<select name="hostname" data-hostname-filter><option value="">Todos permitidos</option></select></label>
               <label>Severidad<select name="severity"><option value="">Todas</option><option value="critical">Crítica</option><option value="high">Alta</option><option value="medium">Media</option><option value="low">Baja</option></select></label>
               <label>Categoría<input name="category" type="text" autocomplete="off" placeholder="Todas"></label>
               <label>Tipo<input name="event_type" type="text" autocomplete="off" placeholder="Todos"></label>
@@ -133,6 +134,7 @@
           <section class="module-section" aria-labelledby="detections-title">
             <div class="module-heading"><h2 id="detections-title">Detecciones</h2><span id="detections-count" class="panel-count">—</span></div>
             <form id="detections-filters" class="filter-bar" action="/dashboard/detections" method="get">
+              <label>Servidor<select name="hostname" data-hostname-filter><option value="">Todos permitidos</option></select></label>
               <label>Severidad<select name="severity"><option value="">Todas</option><option value="critical">Crítica</option><option value="high">Alta</option><option value="medium">Media</option><option value="low">Baja</option></select></label>
               <label>Tipo<input name="event_type" type="text" autocomplete="off" placeholder="Todos"></label>
               <div class="filter-actions"><button type="submit">Aplicar</button><button type="button" data-reset-filters>Limpiar</button></div>
@@ -150,6 +152,7 @@
           <section class="module-section" aria-labelledby="responses-title">
             <div class="module-heading"><h2 id="responses-title">Respuestas</h2><span id="responses-count" class="panel-count">—</span></div>
             <form id="responses-filters" class="filter-bar" action="/dashboard/responses" method="get">
+              <label>Servidor<select name="hostname" data-hostname-filter><option value="">Todos permitidos</option></select></label>
               <label>Tipo<select name="event_type"><option value="">Todos</option><option value="RESPONSE_DECISION">RESPONSE_DECISION</option><option value="RESPONSE_EXECUTION">RESPONSE_EXECUTION</option></select></label>
               <div class="filter-actions"><button type="submit">Aplicar</button><button type="button" data-reset-filters>Limpiar</button></div>
             </form>
@@ -168,14 +171,15 @@
             <form id="create-user-form" class="filter-bar user-form">
               <label>Usuario<input name="username" type="text" minlength="3" maxlength="64" autocomplete="off" required></label>
               <label>Contraseña<input name="password" type="password" minlength="8" maxlength="1024" autocomplete="new-password" required></label>
-              <label>Rol<select name="role"><option value="viewer">Viewer</option><option value="superadmin">Superadmin</option></select></label>
+              <label>Rol<select id="create-user-role" name="role"><option value="viewer">Viewer</option><option value="superadmin">Superadmin</option></select></label>
+              <label>Servidor(es)<select id="create-user-hostnames" name="hostnames" multiple required></select></label>
               <div class="filter-actions"><button type="submit">Crear usuario</button></div>
             </form>
             <div id="users-alert" class="inline-alert" role="alert" hidden></div>
             <div class="table-wrap data-table-wrap">
               <table class="users-table" aria-labelledby="users-title">
-                <thead><tr><th>Usuario</th><th>Rol</th><th>Estado</th><th>Creado</th><th>Acciones</th></tr></thead>
-                <tbody id="users-body"><tr><td colspan="5" class="state-cell"><span class="spinner"></span> Cargando usuarios…</td></tr></tbody>
+                <thead><tr><th>Usuario</th><th>Rol</th><th>Servidores</th><th>Estado</th><th>Creado</th><th>Acciones</th></tr></thead>
+                <tbody id="users-body"><tr><td colspan="6" class="state-cell"><span class="spinner"></span> Cargando usuarios…</td></tr></tbody>
               </table>
             </div>
           </section>

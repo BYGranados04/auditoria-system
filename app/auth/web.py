@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Literal
@@ -32,6 +33,7 @@ class CreateUserRequest(BaseModel):
     username: str = Field(min_length=3, max_length=64)
     password: str = Field(min_length=8, max_length=1024)
     role: Literal["superadmin", "viewer"]
+    hostnames: list[str] = Field(default_factory=list)
 
 
 class UserStatusRequest(BaseModel):
@@ -42,6 +44,12 @@ class UserStatusRequest(BaseModel):
 class UserRoleRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     role: Literal["superadmin", "viewer"]
+    hostnames: list[str] | None = None
+
+
+class UserHostsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    hostnames: list[str]
 
 
 class UserResponse(BaseModel):
@@ -52,6 +60,7 @@ class UserResponse(BaseModel):
     active: bool
     created_at: datetime
     updated_at: datetime
+    hostnames: list[str] | None
 
 
 class MeResponse(BaseModel):
@@ -59,7 +68,13 @@ class MeResponse(BaseModel):
     id: int
     username: str
     role: Literal["superadmin", "viewer"]
+    hostnames: list[str] | None
     csrf_token: str
+
+
+class HostResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    hostname: str
 
 
 class AuthManager:
@@ -69,10 +84,12 @@ class AuthManager:
         settings: AuthSettings,
         *,
         clock: Callable[[], datetime] | None = None,
+        list_known_hostnames: Callable[[], list[str]] | None = None,
     ) -> None:
         self.repository = repository
         self.settings = settings
         self.clock = clock or (lambda: datetime.now(UTC))
+        self._list_known_hostnames = list_known_hostnames or (lambda: [])
 
     def session_from_request(self, request: Request) -> AuthenticatedSession | None:
         token = request.cookies.get(SESSION_COOKIE)
@@ -95,6 +112,49 @@ class AuthManager:
         if session.role != "superadmin":
             raise HTTPException(status_code=403, detail="Permisos insuficientes.")
         return session
+
+    def get_allowed_hostnames(
+        self,
+        session: AuthenticatedSession,
+    ) -> tuple[str, ...] | None:
+        if session.role == "superadmin":
+            return None
+        return self.repository.get_user_hostnames(session.user_id)
+
+    def resolve_hostname_scope(
+        self,
+        session: AuthenticatedSession,
+        requested_hostname: str | None,
+    ) -> tuple[str, ...] | None:
+        allowed = self.get_allowed_hostnames(session)
+        if (
+            requested_hostname is not None
+            and allowed is not None
+            and requested_hostname not in allowed
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="No tiene acceso al hostname solicitado.",
+            )
+        return allowed
+
+    def list_known_hostnames(self) -> list[str]:
+        try:
+            return self._list_known_hostnames()
+        except sqlite3.Error as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Base de datos no disponible.",
+            ) from exc
+
+    def validate_known_hostnames(self, hostnames: list[str]) -> None:
+        known = set(self.list_known_hostnames())
+        unknown = sorted(set(hostnames) - known)
+        if unknown:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Hostname no conocido: {', '.join(unknown)}.",
+            )
 
     @staticmethod
     def verify_same_origin(request: Request) -> None:
@@ -179,6 +239,7 @@ def build_auth_router(manager: AuthManager) -> APIRouter:
             id=int(user["id"]),
             username=str(user["username"]),
             role=str(user["role"]),
+            hostnames=user["hostnames"],
             csrf_token=session.csrf_token,
         )
 
@@ -199,6 +260,7 @@ def build_auth_router(manager: AuthManager) -> APIRouter:
             id=session.user_id,
             username=session.username,
             role=session.role,
+            hostnames=manager.get_allowed_hostnames(session),
             csrf_token=csrf_token,
         )
 
@@ -231,6 +293,21 @@ def build_auth_router(manager: AuthManager) -> APIRouter:
             for user in manager.repository.list_users()
         ]
 
+    @router.get(
+        "/admin/hosts",
+        response_model=list[HostResponse],
+        tags=["admin"],
+    )
+    def list_hosts(
+        _session: AuthenticatedSession = Depends(  # noqa: B008
+            manager.require_superadmin
+        ),
+    ) -> list[HostResponse]:
+        return [
+            HostResponse(hostname=hostname)
+            for hostname in manager.list_known_hostnames()
+        ]
+
     @router.post(
         "/admin/users",
         response_model=UserResponse,
@@ -245,11 +322,14 @@ def build_auth_router(manager: AuthManager) -> APIRouter:
         ),
     ) -> UserResponse:
         manager.verify_csrf(request, session)
+        if data.hostnames:
+            manager.validate_known_hostnames(data.hostnames)
         try:
             user = manager.repository.create_user(
                 username=data.username,
                 password=data.password,
                 role=data.role,
+                hostnames=data.hostnames,
                 now=manager.clock(),
             )
         except AuthConflictError as exc:
@@ -299,16 +379,47 @@ def build_auth_router(manager: AuthManager) -> APIRouter:
         ),
     ) -> UserResponse:
         manager.verify_csrf(request, session)
+        if data.hostnames:
+            manager.validate_known_hostnames(data.hostnames)
         try:
             user = manager.repository.set_user_role(
                 user_id,
                 role=data.role,
                 actor_user_id=session.user_id,
+                hostnames=data.hostnames,
                 now=manager.clock(),
             )
         except AuthNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except AuthConflictError as exc:
+        except (AuthConflictError, AuthValidationError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return UserResponse.model_validate(user)
+
+    @router.post(
+        "/admin/users/{user_id}/hosts",
+        response_model=UserResponse,
+        tags=["admin"],
+    )
+    def update_user_hosts(
+        user_id: int,
+        data: UserHostsRequest,
+        request: Request,
+        session: AuthenticatedSession = Depends(  # noqa: B008
+            manager.require_superadmin
+        ),
+    ) -> UserResponse:
+        manager.verify_csrf(request, session)
+        if data.hostnames:
+            manager.validate_known_hostnames(data.hostnames)
+        try:
+            user = manager.repository.replace_user_hostnames(
+                user_id,
+                hostnames=data.hostnames,
+                now=manager.clock(),
+            )
+        except AuthNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (AuthConflictError, AuthValidationError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return UserResponse.model_validate(user)
 

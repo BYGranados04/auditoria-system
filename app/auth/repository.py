@@ -7,7 +7,7 @@ import re
 import secrets
 import sqlite3
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -84,6 +84,25 @@ def validate_role(role: str) -> Role:
     return role
 
 
+def normalize_hostnames(
+    hostnames: Iterable[str] | None,
+    *,
+    required: bool,
+) -> tuple[str, ...]:
+    normalized: list[str] = []
+    for hostname in hostnames or ():
+        value = hostname.strip()
+        if not value or len(value) > 255:
+            raise AuthValidationError("Hostname no válido.")
+        if value not in normalized:
+            normalized.append(value)
+    if required and not normalized:
+        raise AuthValidationError(
+            "Un viewer activo debe tener al menos un servidor asignado."
+        )
+    return tuple(normalized)
+
+
 def _utc(value: datetime | None = None) -> datetime:
     current = value or datetime.now(UTC)
     if current.tzinfo is None or current.utcoffset() is None:
@@ -100,7 +119,7 @@ def _digest_token(token: str) -> bytes:
 
 
 class AuthRepository:
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     def __init__(
         self,
@@ -141,9 +160,15 @@ class AuthRepository:
                 version = int(connection.execute("PRAGMA user_version").fetchone()[0])
                 if version > self.SCHEMA_VERSION:
                     raise RuntimeError("auth.db usa un esquema más nuevo.")
-                if version < 1:
-                    self._migrate_to_v1(connection)
-                    connection.execute("PRAGMA user_version = 1")
+                migrations = {
+                    1: self._migrate_to_v1,
+                    2: self._migrate_to_v2,
+                }
+                while version < self.SCHEMA_VERSION:
+                    next_version = version + 1
+                    migrations[next_version](connection)
+                    connection.execute(f"PRAGMA user_version = {next_version}")
+                    version = next_version
             if os.name != "nt":
                 self.database_path.chmod(0o600)
             self._initialized = True
@@ -181,6 +206,26 @@ class AuthRepository:
             """
         )
 
+    @staticmethod
+    def _migrate_to_v2(connection: sqlite3.Connection) -> None:
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS user_host_access (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL
+                    REFERENCES users(id) ON DELETE CASCADE,
+                hostname TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE (user_id, hostname)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_user_host_access_user
+                ON user_host_access (user_id);
+            CREATE INDEX IF NOT EXISTS idx_user_host_access_hostname
+                ON user_host_access (hostname);
+            """
+        )
+
     def _hash_password(
         self,
         password: bytes,
@@ -198,14 +243,40 @@ class AuthRepository:
         )
 
     @staticmethod
-    def _public_user(row: sqlite3.Row) -> dict[str, object]:
+    def _user_hostnames(
+        connection: sqlite3.Connection,
+        user_id: int,
+    ) -> list[str]:
+        rows = connection.execute(
+            """
+            SELECT hostname
+            FROM user_host_access
+            WHERE user_id = ?
+            ORDER BY hostname
+            """,
+            (user_id,),
+        ).fetchall()
+        return [str(row["hostname"]) for row in rows]
+
+    @classmethod
+    def _public_user(
+        cls,
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+    ) -> dict[str, object]:
+        role = str(row["role"])
         return {
             "id": int(row["id"]),
             "username": str(row["username"]),
-            "role": str(row["role"]),
+            "role": role,
             "active": bool(row["active"]),
             "created_at": str(row["created_at"]),
             "updated_at": str(row["updated_at"]),
+            "hostnames": (
+                None
+                if role == "superadmin"
+                else cls._user_hostnames(connection, int(row["id"]))
+            ),
         }
 
     def create_user(
@@ -214,12 +285,21 @@ class AuthRepository:
         username: str,
         password: str,
         role: str,
+        hostnames: Iterable[str] | None = None,
         now: datetime | None = None,
     ) -> dict[str, object]:
         self.initialize()
         normalized_username = normalize_username(username)
         encoded_password = validate_password(password)
         validated_role = validate_role(role)
+        validated_hostnames = normalize_hostnames(
+            hostnames,
+            required=validated_role == "viewer",
+        )
+        if validated_role == "superadmin" and validated_hostnames:
+            raise AuthValidationError(
+                "Los superadmin tienen acceso global y no usan asignaciones."
+            )
         salt = secrets.token_bytes(16)
         password_hash = self._hash_password(
             encoded_password,
@@ -254,9 +334,21 @@ class AuthRepository:
                     "SELECT * FROM users WHERE id = ?",
                     (cursor.lastrowid,),
                 ).fetchone()
+                user_id = int(row["id"])
+                connection.executemany(
+                    """
+                    INSERT INTO user_host_access (user_id, hostname, created_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (
+                        (user_id, hostname, timestamp)
+                        for hostname in validated_hostnames
+                    ),
+                )
+                result = self._public_user(connection, row)
         except sqlite3.IntegrityError as exc:
             raise AuthConflictError("El usuario ya existe.") from exc
-        return self._public_user(row)
+        return result
 
     def authenticate(self, username: str, password: str) -> dict[str, object] | None:
         self.initialize()
@@ -270,23 +362,23 @@ class AuthRepository:
                 "SELECT * FROM users WHERE username = ?",
                 (normalized_username,),
             ).fetchone()
-        if row is None or not bool(row["active"]):
-            return None
-        parameters = ScryptParameters(
-            n=int(row["scrypt_n"]),
-            r=int(row["scrypt_r"]),
-            p=int(row["scrypt_p"]),
-            dklen=int(row["scrypt_dklen"]),
-            maxmem=self.scrypt_parameters.maxmem,
-        )
-        candidate = self._hash_password(
-            encoded_password,
-            bytes(row["password_salt"]),
-            parameters,
-        )
-        if not hmac.compare_digest(candidate, bytes(row["password_hash"])):
-            return None
-        return self._public_user(row)
+            if row is None or not bool(row["active"]):
+                return None
+            parameters = ScryptParameters(
+                n=int(row["scrypt_n"]),
+                r=int(row["scrypt_r"]),
+                p=int(row["scrypt_p"]),
+                dklen=int(row["scrypt_dklen"]),
+                maxmem=self.scrypt_parameters.maxmem,
+            )
+            candidate = self._hash_password(
+                encoded_password,
+                bytes(row["password_salt"]),
+                parameters,
+            )
+            if not hmac.compare_digest(candidate, bytes(row["password_hash"])):
+                return None
+            return self._public_user(connection, row)
 
     def create_session(
         self,
@@ -381,7 +473,56 @@ class AuthRepository:
             rows = connection.execute(
                 "SELECT * FROM users ORDER BY username"
             ).fetchall()
-        return [self._public_user(row) for row in rows]
+            return [self._public_user(connection, row) for row in rows]
+
+    def get_user_hostnames(self, user_id: int) -> tuple[str, ...]:
+        self.initialize()
+        with self._connection() as connection:
+            return tuple(self._user_hostnames(connection, user_id))
+
+    def replace_user_hostnames(
+        self,
+        user_id: int,
+        *,
+        hostnames: Iterable[str],
+        now: datetime | None = None,
+    ) -> dict[str, object]:
+        self.initialize()
+        timestamp = _timestamp(_utc(now))
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM users WHERE id = ?", (user_id,)
+            ).fetchone()
+            if row is None:
+                raise AuthNotFoundError("Usuario no encontrado.")
+            if str(row["role"]) != "viewer":
+                raise AuthConflictError(
+                    "Las asignaciones de servidores solo aplican a viewers."
+                )
+            validated = normalize_hostnames(
+                hostnames,
+                required=bool(row["active"]),
+            )
+            connection.execute(
+                "DELETE FROM user_host_access WHERE user_id = ?", (user_id,)
+            )
+            connection.executemany(
+                """
+                INSERT INTO user_host_access (user_id, hostname, created_at)
+                VALUES (?, ?, ?)
+                """,
+                ((user_id, hostname, timestamp) for hostname in validated),
+            )
+            connection.execute(
+                "UPDATE users SET updated_at = ? WHERE id = ?",
+                (timestamp, user_id),
+            )
+            connection.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+            updated = connection.execute(
+                "SELECT * FROM users WHERE id = ?", (user_id,)
+            ).fetchone()
+            return self._public_user(connection, updated)
 
     def set_user_active(
         self,
@@ -401,6 +542,14 @@ class AuthRepository:
             ).fetchone()
             if row is None:
                 raise AuthNotFoundError("Usuario no encontrado.")
+            if (
+                active
+                and str(row["role"]) == "viewer"
+                and not self._user_hostnames(connection, user_id)
+            ):
+                raise AuthConflictError(
+                    "No puede activar un viewer sin servidores asignados."
+                )
             if not active and row["role"] == "superadmin" and bool(row["active"]):
                 active_admins = int(
                     connection.execute(
@@ -421,7 +570,7 @@ class AuthRepository:
             updated = connection.execute(
                 "SELECT * FROM users WHERE id = ?", (user_id,)
             ).fetchone()
-        return self._public_user(updated)
+            return self._public_user(connection, updated)
 
     def set_user_role(
         self,
@@ -429,6 +578,7 @@ class AuthRepository:
         *,
         role: str,
         actor_user_id: int,
+        hostnames: Iterable[str] | None = None,
         now: datetime | None = None,
     ) -> dict[str, object]:
         self.initialize()
@@ -457,13 +607,37 @@ class AuthRepository:
                     raise AuthConflictError(
                         "No se puede degradar al último superadmin activo."
                     )
+            if validated_role == "viewer":
+                current_hostnames = self._user_hostnames(connection, user_id)
+                next_hostnames = normalize_hostnames(
+                    hostnames if hostnames is not None else current_hostnames,
+                    required=bool(row["active"]),
+                )
+                if hostnames is not None:
+                    connection.execute(
+                        "DELETE FROM user_host_access WHERE user_id = ?", (user_id,)
+                    )
+                    connection.executemany(
+                        """
+                        INSERT INTO user_host_access (user_id, hostname, created_at)
+                        VALUES (?, ?, ?)
+                        """,
+                        (
+                            (user_id, hostname, _timestamp(_utc(now)))
+                            for hostname in next_hostnames
+                        ),
+                    )
+            else:
+                connection.execute(
+                    "DELETE FROM user_host_access WHERE user_id = ?", (user_id,)
+                )
             connection.execute(
                 "UPDATE users SET role = ?, updated_at = ? WHERE id = ?",
                 (validated_role, _timestamp(_utc(now)), user_id),
             )
-            if validated_role != str(row["role"]):
+            if validated_role != str(row["role"]) or hostnames is not None:
                 connection.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
             updated = connection.execute(
                 "SELECT * FROM users WHERE id = ?", (user_id,)
             ).fetchone()
-        return self._public_user(updated)
+            return self._public_user(connection, updated)

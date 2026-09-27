@@ -43,6 +43,21 @@ def test_read_only_repository_can_query_existing_database(
     assert events[0]["event_type"] == "TEST_DETECTION"
 
 
+def test_scoped_queries_do_not_modify_read_only_database(tmp_path) -> None:
+    database = tmp_path / "auditoria.db"
+    writable = EventRepository(database)
+    writable.initialize()
+    writable.add(build_event())
+    before = database.read_bytes()
+
+    read_only = EventRepository(database, read_only=True)
+
+    assert read_only.list_events(hostnames=("server-test",))
+    assert read_only.statistics(hostnames=("server-test",))["total"] == 1
+    assert read_only.list_known_hostnames() == ["server-test"]
+    assert database.read_bytes() == before
+
+
 def test_read_only_repository_rejects_initialization(
     tmp_path,
 ) -> None:

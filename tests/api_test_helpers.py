@@ -12,7 +12,8 @@ TEST_SCRYPT = ScryptParameters(n=2**10, r=8, p=1, dklen=32, maxmem=16 * 1024 * 1
 def create_test_auth_repository(
     tmp_path: Path,
     *,
-    role: str = "viewer",
+    role: str = "superadmin",
+    hostnames: tuple[str, ...] | None = None,
 ) -> AuthRepository:
     repository = AuthRepository(
         tmp_path / "auth" / "auth.db",
@@ -22,6 +23,7 @@ def create_test_auth_repository(
         username=TEST_USERNAME,
         password=TEST_PASSWORD,
         role=role,
+        hostnames=(hostnames or ("server-test",)) if role == "viewer" else None,
     )
     return repository
 

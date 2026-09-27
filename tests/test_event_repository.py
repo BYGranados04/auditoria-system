@@ -138,6 +138,22 @@ def test_statistics_groups_events(tmp_path: Path) -> None:
     assert stats["by_event_type"]["PORT_CLOSED"] == 1
 
 
+def test_hostname_scope_filters_events_statistics_and_catalog(tmp_path: Path) -> None:
+    repo = repository(tmp_path)
+    repo.add(make_event(hostname="host-a", severity="high"))
+    repo.add(make_event(hostname="host-b", severity="low"))
+
+    scoped_events = repo.list_events(hostnames=("host-a",))
+    empty_events = repo.list_events(hostnames=())
+    scoped_stats = repo.statistics(hostnames=("host-a",))
+
+    assert [event["hostname"] for event in scoped_events] == ["host-a"]
+    assert empty_events == []
+    assert scoped_stats["total"] == 1
+    assert scoped_stats["by_severity"] == {"high": 1}
+    assert repo.list_known_hostnames() == ["host-a", "host-b"]
+
+
 def test_filters_events_by_time_range(tmp_path: Path) -> None:
     from datetime import UTC, datetime
 
