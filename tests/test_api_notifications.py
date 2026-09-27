@@ -1,6 +1,7 @@
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.api.main import create_app
@@ -12,7 +13,7 @@ from app.storage.event_repository import EventRepository
 from tests.api_test_helpers import TEST_PASSWORD, TEST_SCRYPT
 
 
-def build_client(tmp_path: Path):
+def build_client(tmp_path: Path, *, populate_notifications: bool = True):
     settings = AgentSettings(
         interval=1, state_dir=tmp_path / "state", log_dir=tmp_path / "logs"
     )
@@ -32,22 +33,23 @@ def build_client(tmp_path: Path):
         token = auth.create_agent_registration_token(users[name])
         auth.enroll_agent(registration_token=token.token, hostname=hostname)
     notifications = NotificationRepository(settings.state_dir / "notifications.db")
-    for hostname, severity, status in (
-        ("host-a", "high", "sent"),
-        ("host-b", "critical", "failed"),
-    ):
-        attempt, _ = notifications.create_pending(
-            event_id=str(uuid4()),
-            provider="resend",
-            recipient="ops@example.test",
-            hostname=hostname,
-            severity=severity,
-        )
-        notifications.complete(
-            attempt.id,
-            provider_message_id="msg" if status == "sent" else None,
-            error="failed" if status == "failed" else None,
-        )
+    if populate_notifications:
+        for hostname, severity, status in (
+            ("host-a", "high", "sent"),
+            ("host-b", "critical", "failed"),
+        ):
+            attempt, _ = notifications.create_pending(
+                event_id=str(uuid4()),
+                provider="resend",
+                recipient="ops@example.test",
+                hostname=hostname,
+                severity=severity,
+            )
+            notifications.complete(
+                attempt.id,
+                provider_message_id="msg" if status == "sent" else None,
+                error="failed" if status == "failed" else None,
+            )
     app = create_app(
         settings=settings,
         repository=EventRepository(settings.database_file),
@@ -110,6 +112,37 @@ def test_viewer_empty_scope_and_summary(tmp_path):
     login(client, "viewer-empty")
     assert client.get("/notifications").json() == []
     assert client.get("/notifications/summary").json()["total"] == 0
+
+
+def test_api_returns_empty_results_without_notifications_database(tmp_path):
+    client, notifications = build_client(tmp_path, populate_notifications=False)
+    assert not notifications.database_path.exists()
+    login(client, "admin")
+
+    assert client.get("/notifications").json() == []
+    assert client.get("/notifications/summary").json() == {
+        "total": 0,
+        "pending": 0,
+        "sent": 0,
+        "failed": 0,
+        "high": 0,
+        "critical": 0,
+    }
+    assert client.get("/notifications/1").status_code == 404
+    assert not notifications.database_path.exists()
+
+
+def test_read_only_repository_cannot_modify_existing_database(tmp_path):
+    _, writable = build_client(tmp_path)
+    before = writable.database_path.read_bytes()
+    read_only = NotificationRepository(writable.database_path, read_only=True)
+
+    assert len(read_only.list()) == 2
+    with pytest.raises(RuntimeError, match="solo lectura"):
+        read_only.initialize()
+    with pytest.raises(RuntimeError, match="solo lectura"):
+        read_only.complete(1)
+    assert writable.database_path.read_bytes() == before
 
 
 def test_dashboard_notifications_is_authenticated_and_safe(tmp_path):

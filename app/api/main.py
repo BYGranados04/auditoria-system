@@ -139,7 +139,10 @@ def create_app(
     application.include_router(
         build_notification_router(
             auth_manager,
-            NotificationRepository(resolved_settings.state_dir / "notifications.db"),
+            NotificationRepository(
+                resolved_settings.state_dir / "notifications.db",
+                read_only=True,
+            ),
         )
     )
 
