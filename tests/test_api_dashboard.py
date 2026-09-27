@@ -81,6 +81,15 @@ def test_dashboard_sidebar_links_to_real_modules(tmp_path: Path) -> None:
     assert 'data-module="events"' in html
     assert 'data-module="detections"' in html
     assert 'data-module="responses"' in html
+    assert 'data-module="users"' in html
+    assert (
+        'data-module="users" href="/dashboard/users" '
+        'aria-label="Usuarios" title="Usuarios" hidden'
+    ) in html
+    assert 'id="sidebar-collapse"' in html
+    assert 'aria-label="Contraer menú"' in html
+    assert 'id="mobile-menu-toggle"' in html
+    assert 'id="sidebar-backdrop"' in html
 
 
 def test_dashboard_local_assets_are_accessible(tmp_path: Path) -> None:
@@ -104,6 +113,10 @@ def test_dashboard_local_assets_are_accessible(tmp_path: Path) -> None:
     assert '"/dashboard/events"' in script.text
     assert '"/dashboard/detections"' in script.text
     assert '"/dashboard/responses"' in script.text
+    assert '"auditoria-sidebar-collapsed"' in script.text
+    assert "window.localStorage" in script.text
+    assert 'event.key === "Escape"' in script.text
+    assert 'setAttribute("inert"' in script.text
 
 
 def test_public_login_uses_csp_and_local_script(tmp_path: Path) -> None:
@@ -116,8 +129,27 @@ def test_public_login_uses_csp_and_local_script(tmp_path: Path) -> None:
     assert "script-src 'self'" in login.headers["content-security-policy"]
     assert "'unsafe-inline'" not in login.headers["content-security-policy"]
     assert "/dashboard/assets/login.js" in login.text
+    assert 'type="password"' in login.text
+    assert 'data-password-toggle' in login.text
+    assert 'type="button"' in login.text
+    assert 'aria-label="Mostrar contraseña"' in login.text
+    assert 'aria-pressed="false"' in login.text
     assert script.status_code == 200
     assert "innerHTML" not in script.text
+    assert 'input.type = visible ? "text" : "password"' in script.text
+    assert 'visible ? "Ocultar contraseña" : "Mostrar contraseña"' in script.text
+
+
+def test_user_form_has_accessible_password_toggle(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+    html = client.get("/dashboard/users").text
+    script = client.get("/dashboard/assets/dashboard.js").text
+
+    assert 'id="create-user-password"' in html
+    assert 'aria-controls="create-user-password"' in html
+    assert 'data-password-toggle' in html
+    assert 'aria-pressed="false"' in html
+    assert "configurePasswordToggles" in script
 
 
 def test_dashboard_uses_supported_filters_and_overview_limits(tmp_path: Path) -> None:

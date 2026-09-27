@@ -1,6 +1,8 @@
 "use strict";
 
 const REFRESH_INTERVAL_MS = 30_000;
+const SIDEBAR_STORAGE_KEY = "auditoria-sidebar-collapsed";
+const MOBILE_NAVIGATION = window.matchMedia("(max-width: 760px)");
 const MODULES = {
   "/dashboard": { key: "overview", title: "Overview" },
   "/dashboard/events": { key: "events", title: "Eventos" },
@@ -17,6 +19,7 @@ let authContext = null;
 let knownHosts = [];
 
 const elements = {
+  appShell: document.querySelector("#app-shell"),
   apiIndicator: document.querySelector("#api-indicator"),
   apiStatus: document.querySelector("#api-status"),
   automaticBlocking: document.querySelector("#automatic-blocking"),
@@ -36,6 +39,7 @@ const elements = {
   hostname: document.querySelector("#hostname"),
   lastUpdated: document.querySelector("#last-updated"),
   logoutButton: document.querySelector("#logout-button"),
+  mobileMenuToggle: document.querySelector("#mobile-menu-toggle"),
   overviewDetectionsBody: document.querySelector("#overview-detections-body"),
   overviewEventsBody: document.querySelector("#overview-events-body"),
   refreshButton: document.querySelector("#refresh-button"),
@@ -43,10 +47,115 @@ const elements = {
   responsesBody: document.querySelector("#responses-body"),
   responsesCount: document.querySelector("#responses-count"),
   responsesFilters: document.querySelector("#responses-filters"),
+  sidebar: document.querySelector("#sidebar"),
+  sidebarBackdrop: document.querySelector("#sidebar-backdrop"),
+  sidebarCollapse: document.querySelector("#sidebar-collapse"),
   usersAlert: document.querySelector("#users-alert"),
   usersBody: document.querySelector("#users-body"),
   usersCount: document.querySelector("#users-count"),
 };
+
+function readSidebarPreference() {
+  try {
+    return window.localStorage.getItem(SIDEBAR_STORAGE_KEY) === "true";
+  } catch (_error) {
+    return false;
+  }
+}
+
+function storeSidebarPreference(collapsed) {
+  try {
+    window.localStorage.setItem(SIDEBAR_STORAGE_KEY, String(collapsed));
+  } catch (_error) {
+    // The layout remains usable when storage is unavailable.
+  }
+}
+
+function setSidebarCollapsed(collapsed, persist = false) {
+  elements.appShell.classList.toggle("is-sidebar-collapsed", collapsed);
+  elements.sidebar.classList.toggle("is-collapsed", collapsed);
+  elements.sidebarCollapse.setAttribute("aria-expanded", String(!collapsed));
+  elements.sidebarCollapse.setAttribute(
+    "aria-label",
+    collapsed ? "Expandir menú" : "Contraer menú",
+  );
+  if (persist) storeSidebarPreference(collapsed);
+}
+
+function setDrawerOpen(open, restoreFocus = false) {
+  if (!MOBILE_NAVIGATION.matches) open = false;
+  elements.sidebar.classList.toggle("is-drawer-open", open);
+  elements.sidebarBackdrop.hidden = !open;
+  elements.mobileMenuToggle.setAttribute("aria-expanded", String(open));
+  elements.mobileMenuToggle.setAttribute(
+    "aria-label",
+    open ? "Cerrar menú" : "Abrir menú",
+  );
+  document.body.classList.toggle("is-drawer-open", open);
+  if (open) {
+    elements.sidebar.removeAttribute("inert");
+    elements.sidebar.removeAttribute("aria-hidden");
+    document.querySelector(".nav-item.is-active:not([hidden])")?.focus();
+    document.querySelector("#contenido").setAttribute("inert", "");
+  } else {
+    document.querySelector("#contenido").removeAttribute("inert");
+    if (MOBILE_NAVIGATION.matches) {
+      elements.sidebar.setAttribute("inert", "");
+      elements.sidebar.setAttribute("aria-hidden", "true");
+    } else {
+      elements.sidebar.removeAttribute("inert");
+      elements.sidebar.removeAttribute("aria-hidden");
+    }
+    if (restoreFocus && MOBILE_NAVIGATION.matches) {
+      elements.mobileMenuToggle.focus();
+    }
+  }
+}
+
+function configureNavigation() {
+  setSidebarCollapsed(readSidebarPreference());
+  setDrawerOpen(false);
+  elements.sidebarCollapse.addEventListener("click", () => {
+    const collapsed = !elements.sidebar.classList.contains("is-collapsed");
+    setSidebarCollapsed(collapsed, true);
+  });
+  elements.mobileMenuToggle.addEventListener("click", () => {
+    setDrawerOpen(!elements.sidebar.classList.contains("is-drawer-open"));
+  });
+  elements.sidebarBackdrop.addEventListener("click", () => {
+    setDrawerOpen(false, true);
+  });
+  elements.sidebar.querySelectorAll(".nav-item").forEach((link) => {
+    link.addEventListener("click", () => setDrawerOpen(false));
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && elements.sidebar.classList.contains("is-drawer-open")) {
+      setDrawerOpen(false, true);
+    }
+  });
+  MOBILE_NAVIGATION.addEventListener("change", () => setDrawerOpen(false));
+}
+
+function configurePasswordToggles() {
+  document.querySelectorAll("[data-password-toggle]").forEach((toggle) => {
+    const input = document.querySelector(`#${toggle.getAttribute("aria-controls")}`);
+    toggle.addEventListener("click", () => {
+      const visible = input.type === "password";
+      setPasswordVisibility(toggle, input, visible);
+    });
+  });
+}
+
+function setPasswordVisibility(toggle, input, visible) {
+  input.type = visible ? "text" : "password";
+  toggle.setAttribute("aria-pressed", String(visible));
+  toggle.setAttribute(
+    "aria-label",
+    visible ? "Ocultar contraseña" : "Mostrar contraseña",
+  );
+  toggle.querySelector(".password-icon-show").hidden = visible;
+  toggle.querySelector(".password-icon-hide").hidden = !visible;
+}
 
 function makeElement(tag, className, value) {
   const element = document.createElement(tag);
@@ -635,6 +744,11 @@ function configureAccountActions() {
           : [],
       });
       elements.createUserForm.reset();
+      const passwordInput = document.querySelector("#create-user-password");
+      const passwordToggle = elements.createUserForm.querySelector(
+        "[data-password-toggle]",
+      );
+      setPasswordVisibility(passwordToggle, passwordInput, false);
       updateCreateUserScope();
       showUsersAlert("Usuario creado.", false);
       await refreshAndReschedule();
@@ -658,6 +772,8 @@ function updateCreateUserScope() {
 }
 
 async function initializeDashboard() {
+  configureNavigation();
+  configurePasswordToggles();
   await loadAuthContext();
   activateModule();
   populateFiltersFromLocation();

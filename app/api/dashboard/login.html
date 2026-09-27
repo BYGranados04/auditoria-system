@@ -14,7 +14,21 @@
     <h1>Auditoria System</h1>
     <form id="login-form" action="/auth/login" method="post">
       <label>Usuario<input name="username" type="text" autocomplete="username" maxlength="64" required autofocus></label>
-      <label>Contraseña<input name="password" type="password" autocomplete="current-password" maxlength="1024" required></label>
+      <div class="form-control">
+        <label for="login-password">Contraseña</label>
+        <div class="password-field">
+          <input id="login-password" name="password" type="password" autocomplete="current-password" maxlength="1024" required>
+          <button class="password-toggle" type="button" data-password-toggle aria-controls="login-password" aria-label="Mostrar contraseña" aria-pressed="false">
+            <svg class="password-icon password-icon-show" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path d="M1 8s2.6-4 7-4 7 4 7 4-2.6 4-7 4-7-4-7-4Z"></path>
+              <circle cx="8" cy="8" r="2"></circle>
+            </svg>
+            <svg class="password-icon password-icon-hide" viewBox="0 0 16 16" aria-hidden="true" focusable="false" hidden>
+              <path d="M2 2l12 12M6.2 4.3A7.7 7.7 0 0 1 8 4c4.4 0 7 4 7 4a10 10 0 0 1-2 2.4M9.8 11.7A7.7 7.7 0 0 1 8 12c-4.4 0-7-4-7-4a10 10 0 0 1 2-2.4"></path>
+            </svg>
+          </button>
+        </div>
+      </div>
       <div id="login-error" class="login-error" role="alert" hidden></div>
       <button id="login-button" type="submit">Iniciar sesión</button>
     </form>

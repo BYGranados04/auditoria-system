@@ -4,6 +4,21 @@ const form = document.querySelector("#login-form");
 const button = document.querySelector("#login-button");
 const errorMessage = document.querySelector("#login-error");
 
+document.querySelectorAll("[data-password-toggle]").forEach((toggle) => {
+  const input = document.querySelector(`#${toggle.getAttribute("aria-controls")}`);
+  toggle.addEventListener("click", () => {
+    const visible = input.type === "password";
+    input.type = visible ? "text" : "password";
+    toggle.setAttribute("aria-pressed", String(visible));
+    toggle.setAttribute(
+      "aria-label",
+      visible ? "Ocultar contraseña" : "Mostrar contraseña",
+    );
+    toggle.querySelector(".password-icon-show").hidden = visible;
+    toggle.querySelector(".password-icon-hide").hidden = !visible;
+  });
+});
+
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   button.disabled = true;

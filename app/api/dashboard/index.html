@@ -11,31 +11,40 @@
 </head>
 <body>
   <a class="skip-link" href="#contenido">Saltar al contenido</a>
-  <div class="app-shell">
-    <aside class="sidebar" aria-label="Navegación principal">
-      <div class="sidebar-title">Auditoria System</div>
+  <div id="app-shell" class="app-shell">
+    <aside id="sidebar" class="sidebar" aria-label="Navegación principal">
+      <div class="sidebar-header">
+        <div class="sidebar-title">Auditoria System</div>
+        <button id="sidebar-collapse" class="sidebar-control" type="button" aria-controls="sidebar" aria-label="Contraer menú" aria-expanded="true">
+          <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m10 3-5 5 5 5"></path></svg>
+        </button>
+      </div>
       <nav>
-        <a class="nav-item" data-module="overview" href="/dashboard">
-          <span class="nav-icon" aria-hidden="true">▦</span><span>Overview</span>
+        <a class="nav-item" data-module="overview" href="/dashboard" aria-label="Overview" title="Overview">
+          <span class="nav-icon" aria-hidden="true">▦</span><span class="nav-label">Overview</span>
         </a>
-        <a class="nav-item" data-module="events" href="/dashboard/events">
-          <span class="nav-icon" aria-hidden="true">≡</span><span>Eventos</span>
+        <a class="nav-item" data-module="events" href="/dashboard/events" aria-label="Eventos" title="Eventos">
+          <span class="nav-icon" aria-hidden="true">≡</span><span class="nav-label">Eventos</span>
         </a>
-        <a class="nav-item" data-module="detections" href="/dashboard/detections">
-          <span class="nav-icon" aria-hidden="true">△</span><span>Detecciones</span>
+        <a class="nav-item" data-module="detections" href="/dashboard/detections" aria-label="Detecciones" title="Detecciones">
+          <span class="nav-icon" aria-hidden="true">△</span><span class="nav-label">Detecciones</span>
         </a>
-        <a class="nav-item" data-module="responses" href="/dashboard/responses">
-          <span class="nav-icon" aria-hidden="true">↳</span><span>Respuestas</span>
+        <a class="nav-item" data-module="responses" href="/dashboard/responses" aria-label="Respuestas" title="Respuestas">
+          <span class="nav-icon" aria-hidden="true">↳</span><span class="nav-label">Respuestas</span>
         </a>
-        <a class="nav-item" data-module="users" href="/dashboard/users" hidden>
-          <span class="nav-icon" aria-hidden="true">○</span><span>Usuarios</span>
+        <a class="nav-item" data-module="users" href="/dashboard/users" aria-label="Usuarios" title="Usuarios" hidden>
+          <span class="nav-icon" aria-hidden="true">○</span><span class="nav-label">Usuarios</span>
         </a>
       </nav>
       <p class="sidebar-note">Solo lectura</p>
     </aside>
+    <button id="sidebar-backdrop" class="sidebar-backdrop" type="button" aria-label="Cerrar menú" tabindex="-1" hidden></button>
 
     <main id="contenido" class="content">
       <header class="topbar">
+        <button id="mobile-menu-toggle" class="mobile-menu-toggle" type="button" aria-controls="sidebar" aria-label="Abrir menú" aria-expanded="false">
+          <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M2 4h12M2 8h12M2 12h12"></path></svg>
+        </button>
         <div class="page-identity">
           <h1>Auditoria System</h1>
           <span id="hostname" class="hostname">—</span>
@@ -170,7 +179,7 @@
             <div class="module-heading"><h2 id="users-title">Usuarios</h2><span id="users-count" class="panel-count">—</span></div>
             <form id="create-user-form" class="filter-bar user-form">
               <label>Usuario<input name="username" type="text" minlength="3" maxlength="64" autocomplete="off" required></label>
-              <label>Contraseña<input name="password" type="password" minlength="8" maxlength="1024" autocomplete="new-password" required></label>
+              <div class="form-control"><label for="create-user-password">Contraseña</label><div class="password-field"><input id="create-user-password" name="password" type="password" minlength="8" maxlength="1024" autocomplete="new-password" required><button class="password-toggle" type="button" data-password-toggle aria-controls="create-user-password" aria-label="Mostrar contraseña" aria-pressed="false"><svg class="password-icon password-icon-show" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M1 8s2.6-4 7-4 7 4 7 4-2.6 4-7 4-7-4-7-4Z"></path><circle cx="8" cy="8" r="2"></circle></svg><svg class="password-icon password-icon-hide" viewBox="0 0 16 16" aria-hidden="true" focusable="false" hidden><path d="M2 2l12 12M6.2 4.3A7.7 7.7 0 0 1 8 4c4.4 0 7 4 7 4a10 10 0 0 1-2 2.4M9.8 11.7A7.7 7.7 0 0 1 8 12c-4.4 0-7-4-7-4a10 10 0 0 1 2-2.4"></path></svg></button></div></div>
               <label>Rol<select id="create-user-role" name="role"><option value="viewer">Viewer</option><option value="superadmin">Superadmin</option></select></label>
               <label>Servidor(es)<select id="create-user-hostnames" name="hostnames" multiple required></select></label>
               <div class="filter-actions"><button type="submit">Crear usuario</button></div>
