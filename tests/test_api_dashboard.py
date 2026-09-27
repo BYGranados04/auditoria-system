@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.api.main import create_app
@@ -43,6 +44,41 @@ def test_dashboard_returns_html(tmp_path: Path) -> None:
     assert "onclick=" not in response.text
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/dashboard",
+        "/dashboard/events",
+        "/dashboard/detections",
+        "/dashboard/responses",
+    ],
+)
+def test_dashboard_module_routes_return_shared_shell(
+    tmp_path: Path,
+    path: str,
+) -> None:
+    response = build_client(tmp_path).get(path)
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "Auditoria System" in response.text
+    assert "/dashboard/assets/styles.css" in response.text
+    assert "/dashboard/assets/dashboard.js" in response.text
+
+
+def test_dashboard_sidebar_links_to_real_modules(tmp_path: Path) -> None:
+    html = build_client(tmp_path).get("/dashboard").text
+
+    assert 'href="/dashboard"' in html
+    assert 'href="/dashboard/events"' in html
+    assert 'href="/dashboard/detections"' in html
+    assert 'href="/dashboard/responses"' in html
+    assert 'data-module="overview"' in html
+    assert 'data-module="events"' in html
+    assert 'data-module="detections"' in html
+    assert 'data-module="responses"' in html
+
+
 def test_dashboard_local_assets_are_accessible(tmp_path: Path) -> None:
     client = build_client(tmp_path)
 
@@ -61,6 +97,24 @@ def test_dashboard_local_assets_are_accessible(tmp_path: Path) -> None:
     assert "setInterval" not in script.text
     assert "visibilitychange" in script.text
     assert "clearTimeout" in script.text
+    assert '"/dashboard/events"' in script.text
+    assert '"/dashboard/detections"' in script.text
+    assert '"/dashboard/responses"' in script.text
+
+
+def test_dashboard_uses_supported_filters_and_overview_limits(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+    html = client.get("/dashboard").text
+    script = client.get("/dashboard/assets/dashboard.js").text
+
+    assert 'name="severity"' in html
+    assert 'name="category"' in html
+    assert 'name="event_type"' in html
+    assert 'fetchJson("/events?limit=5")' in script
+    assert 'fetchJson("/detections?limit=4")' in script
+    assert 'endpointWithFilters("/events"' in script
+    assert 'endpointWithFilters("/detections"' in script
+    assert 'endpointWithFilters("/responses"' in script
 
 
 def test_existing_endpoints_work_with_dashboard(tmp_path: Path) -> None:

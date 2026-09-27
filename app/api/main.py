@@ -98,6 +98,21 @@ def create_app(
     )
 
     @application.get(
+        "/dashboard/responses",
+        include_in_schema=False,
+        response_class=FileResponse,
+    )
+    @application.get(
+        "/dashboard/detections",
+        include_in_schema=False,
+        response_class=FileResponse,
+    )
+    @application.get(
+        "/dashboard/events",
+        include_in_schema=False,
+        response_class=FileResponse,
+    )
+    @application.get(
         "/dashboard",
         include_in_schema=False,
         response_class=FileResponse,
