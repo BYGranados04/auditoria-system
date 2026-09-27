@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b1118">
+  <title>Overview | Auditoria System</title>
+  <link rel="stylesheet" href="/dashboard/assets/styles.css">
+  <script src="/dashboard/assets/dashboard.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#contenido">Saltar al contenido</a>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Navegación principal">
+      <div class="brand-mark" aria-hidden="true">AS</div>
+      <nav>
+        <a class="nav-item is-active" href="#overview" aria-current="page">
+          <span class="nav-icon" aria-hidden="true">◫</span>
+          <span>Overview</span>
+        </a>
+        <a class="nav-item" href="#eventos">
+          <span class="nav-icon" aria-hidden="true">≡</span>
+          <span>Eventos</span>
+        </a>
+        <a class="nav-item" href="#detecciones">
+          <span class="nav-icon" aria-hidden="true">◇</span>
+          <span>Detecciones</span>
+        </a>
+        <a class="nav-item" href="#respuestas">
+          <span class="nav-icon" aria-hidden="true">↳</span>
+          <span>Respuestas</span>
+        </a>
+      </nav>
+      <p class="sidebar-note">Solo lectura</p>
+    </aside>
+
+    <main id="contenido" class="content">
+      <header id="overview" class="topbar">
+        <div>
+          <p class="eyebrow">CENTRO DE OPERACIONES</p>
+          <h1>Auditoria System</h1>
+          <div class="host-line">
+            <span class="muted">Host</span>
+            <strong id="hostname">—</strong>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <div class="api-state" role="status" aria-live="polite">
+            <span id="api-indicator" class="status-dot is-loading"></span>
+            <span id="api-status">Comprobando API</span>
+          </div>
+          <div class="refresh-meta">
+            <span>Última actualización</span>
+            <time id="last-updated">—</time>
+          </div>
+          <button
+            id="refresh-button"
+            class="refresh-button"
+            type="button"
+            aria-controls="dashboard-data"
+          >
+            <span aria-hidden="true">↻</span>
+            Actualizar
+          </button>
+        </div>
+      </header>
+
+      <div id="global-alert" class="global-alert" role="alert" hidden></div>
+
+      <div id="dashboard-data">
+      <section aria-labelledby="metricas-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">PANORAMA ACTUAL</p>
+            <h2 id="metricas-title">Métricas de seguridad</h2>
+          </div>
+          <span class="read-only-badge">Vista de solo lectura</span>
+        </div>
+        <div class="metric-grid" aria-live="polite">
+          <article class="metric-card metric-total">
+            <span>Total de eventos</span>
+            <strong id="metric-total" class="metric-value loading-value">—</strong>
+            <small>Eventos registrados</small>
+          </article>
+          <article class="metric-card severity-critical">
+            <span>Críticos</span>
+            <strong id="metric-critical" class="metric-value loading-value">—</strong>
+            <small>Prioridad inmediata</small>
+          </article>
+          <article class="metric-card severity-high">
+            <span>Altos</span>
+            <strong id="metric-high" class="metric-value loading-value">—</strong>
+            <small>Atención requerida</small>
+          </article>
+          <article class="metric-card severity-medium">
+            <span>Medios</span>
+            <strong id="metric-medium" class="metric-value loading-value">—</strong>
+            <small>Revisión recomendada</small>
+          </article>
+          <article class="metric-card severity-low">
+            <span>Bajos</span>
+            <strong id="metric-low" class="metric-value loading-value">—</strong>
+            <small>Actividad informativa</small>
+          </article>
+          <article class="metric-card metric-blocks">
+            <span>Bloqueos activos</span>
+            <strong id="metric-blocks" class="metric-value loading-value">—</strong>
+            <small>Respuesta en vivo</small>
+          </article>
+        </div>
+      </section>
+
+      <section class="defense-panel" aria-labelledby="defense-title">
+        <div>
+          <p class="eyebrow">POSTURA OPERATIVA</p>
+          <h2 id="defense-title">Estado defensivo</h2>
+        </div>
+        <dl class="defense-details">
+          <div>
+            <dt>Modo de respuesta</dt>
+            <dd id="response-mode"><span class="skeleton-text">Cargando</span></dd>
+          </div>
+          <div>
+            <dt>Bloqueo automático</dt>
+            <dd id="automatic-blocking"><span class="skeleton-text">Cargando</span></dd>
+          </div>
+        </dl>
+      </section>
+
+      <section id="eventos" class="data-panel" aria-labelledby="events-title">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">ACTIVIDAD DEL SISTEMA</p>
+            <h2 id="events-title">Eventos recientes</h2>
+          </div>
+          <span class="panel-count" id="events-count">—</span>
+        </div>
+        <div class="table-wrap">
+          <table aria-labelledby="events-title">
+            <thead><tr><th>Timestamp</th><th>Severidad</th><th>Categoría</th><th>Tipo</th><th>Descripción</th></tr></thead>
+            <tbody id="events-body"><tr><td colspan="5" class="state-cell"><span class="spinner"></span> Cargando eventos…</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <div class="split-grid">
+        <section id="detecciones" class="data-panel" aria-labelledby="detections-title">
+          <div class="panel-heading">
+            <div><p class="eyebrow">SEÑALES</p><h2 id="detections-title">Detecciones recientes</h2></div>
+            <span class="panel-count" id="detections-count">—</span>
+          </div>
+          <div id="detections-list" class="card-list" aria-live="polite">
+            <div class="list-state"><span class="spinner"></span> Cargando detecciones…</div>
+          </div>
+        </section>
+
+        <section id="respuestas" class="data-panel" aria-labelledby="responses-title">
+          <div class="panel-heading">
+            <div><p class="eyebrow">DECISIONES Y EJECUCIÓN</p><h2 id="responses-title">Respuestas recientes</h2></div>
+            <span class="panel-count" id="responses-count">—</span>
+          </div>
+          <div id="responses-list" class="card-list" aria-live="polite">
+            <div class="list-state"><span class="spinner"></span> Cargando respuestas…</div>
+          </div>
+        </section>
+      </div>
+      </div>
+
+      <footer>
+        <span>Auditoria System · Overview local</span>
+        <span>Actualización automática cada 30 segundos</span>
+      </footer>
+    </main>
+  </div>
+</body>
+</html>

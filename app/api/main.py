@@ -3,9 +3,11 @@ from __future__ import annotations
 import platform
 import sqlite3
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict
 
 from app.core.config import AgentSettings, load_agent_settings
@@ -22,6 +24,8 @@ ResponseEventType = Literal[
     "RESPONSE_DECISION",
     "RESPONSE_EXECUTION",
 ]
+
+DASHBOARD_DIRECTORY = Path(__file__).with_name("dashboard")
 
 
 class HealthResponse(BaseModel):
@@ -92,6 +96,55 @@ def create_app(
         description=("API local de consulta para Auditoria System."),
         version="0.6.0-dev",
     )
+
+    @application.get(
+        "/dashboard",
+        include_in_schema=False,
+        response_class=FileResponse,
+    )
+    def dashboard() -> FileResponse:
+        return FileResponse(
+            DASHBOARD_DIRECTORY / "index.html",
+            media_type="text/html",
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Security-Policy": (
+                    "default-src 'self'; "
+                    "script-src 'self'; "
+                    "style-src 'self'; "
+                    "img-src 'self' data:; "
+                    "connect-src 'self'; "
+                    "object-src 'none'; "
+                    "base-uri 'none'; "
+                    "frame-ancestors 'none'; "
+                    "form-action 'none'"
+                ),
+                "Referrer-Policy": "no-referrer",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @application.get(
+        "/dashboard/assets/styles.css",
+        include_in_schema=False,
+        response_class=FileResponse,
+    )
+    def dashboard_styles() -> FileResponse:
+        return FileResponse(
+            DASHBOARD_DIRECTORY / "styles.css",
+            media_type="text/css",
+        )
+
+    @application.get(
+        "/dashboard/assets/dashboard.js",
+        include_in_schema=False,
+        response_class=FileResponse,
+    )
+    def dashboard_script() -> FileResponse:
+        return FileResponse(
+            DASHBOARD_DIRECTORY / "dashboard.js",
+            media_type="text/javascript",
+        )
 
     @application.get(
         "/health",
