@@ -135,6 +135,36 @@ def test_superadmin_can_list_and_create_both_roles_without_secrets(
         assert "token" not in user
 
 
+def test_user_creation_rejects_seven_and_accepts_eight_character_passwords(
+    tmp_path: Path,
+) -> None:
+    client, _, _ = build_application(tmp_path)
+    signed_in = login(client)
+    headers = csrf_headers(signed_in)
+
+    rejected = client.post(
+        "/admin/users",
+        headers=headers,
+        json={
+            "username": "seven-chars",
+            "password": "1234567",
+            "role": "viewer",
+        },
+    )
+    accepted = client.post(
+        "/admin/users",
+        headers=headers,
+        json={
+            "username": "eight-chars",
+            "password": "12345678",
+            "role": "viewer",
+        },
+    )
+
+    assert rejected.status_code == 422
+    assert accepted.status_code == 201
+
+
 def test_csrf_and_origin_are_required_for_admin_mutations(tmp_path: Path) -> None:
     client, _, _ = build_application(tmp_path)
     signed_in = login(client)

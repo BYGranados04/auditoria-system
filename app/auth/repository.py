@@ -16,7 +16,7 @@ from typing import Literal
 
 Role = Literal["superadmin", "viewer"]
 USERNAME_PATTERN = re.compile(r"^[a-z0-9._-]{3,64}$")
-MINIMUM_PASSWORD_LENGTH = 12
+MINIMUM_PASSWORD_LENGTH = 8
 MAXIMUM_PASSWORD_BYTES = 1024
 
 

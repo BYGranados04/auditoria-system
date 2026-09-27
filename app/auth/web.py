@@ -30,7 +30,7 @@ class LoginRequest(BaseModel):
 class CreateUserRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     username: str = Field(min_length=3, max_length=64)
-    password: str = Field(min_length=12, max_length=1024)
+    password: str = Field(min_length=8, max_length=1024)
     role: Literal["superadmin", "viewer"]
 
 

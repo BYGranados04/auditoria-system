@@ -3,8 +3,31 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.auth.repository import AuthConflictError, AuthRepository
+from app.auth.repository import AuthConflictError, AuthRepository, AuthValidationError
 from tests.api_test_helpers import TEST_PASSWORD, TEST_SCRYPT
+
+
+def test_password_with_seven_characters_is_rejected(tmp_path) -> None:
+    repository = AuthRepository(tmp_path / "auth.db", scrypt_parameters=TEST_SCRYPT)
+
+    with pytest.raises(AuthValidationError, match="al menos 8 caracteres"):
+        repository.create_user(
+            username="short-password",
+            password="1234567",
+            role="viewer",
+        )
+
+
+def test_password_with_eight_characters_is_accepted(tmp_path) -> None:
+    repository = AuthRepository(tmp_path / "auth.db", scrypt_parameters=TEST_SCRYPT)
+
+    user = repository.create_user(
+        username="minimum-password",
+        password="12345678",
+        role="viewer",
+    )
+
+    assert repository.authenticate("minimum-password", "12345678") == user
 
 
 def test_auth_database_is_separate_and_password_is_not_plaintext(tmp_path) -> None:
