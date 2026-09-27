@@ -130,7 +130,7 @@ def create_app(
     application = FastAPI(
         title="Auditoria System API",
         description=("API local de consulta para Auditoria System."),
-        version="0.6.0-dev",
+        version="0.7.0",
     )
     application.include_router(build_auth_router(auth_manager))
     application.include_router(build_agent_router(auth_manager))
