@@ -6,6 +6,7 @@ from app.api.main import create_app
 from app.core.config import AgentSettings
 from app.core.events import SecurityEvent
 from app.storage.event_repository import EventRepository
+from tests.api_test_helpers import create_test_auth_repository, login_test_user
 
 
 def build_settings(
@@ -50,9 +51,11 @@ def test_status_reports_runtime_and_repository_state(
     application = create_app(
         settings=settings,
         repository=repository,
+        auth_repository=create_test_auth_repository(tmp_path),
     )
 
     client = TestClient(application)
+    login_test_user(client)
 
     response = client.get("/status")
 
@@ -86,9 +89,13 @@ def test_status_does_not_create_missing_database(
 
     assert database_file.exists() is False
 
-    application = create_app(settings=settings)
+    application = create_app(
+        settings=settings,
+        auth_repository=create_test_auth_repository(tmp_path),
+    )
 
     client = TestClient(application)
+    login_test_user(client)
 
     health = client.get("/health")
 

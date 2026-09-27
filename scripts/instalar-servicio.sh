@@ -5,6 +5,7 @@ set -euo pipefail
 RAIZ_PROYECTO="/opt/auditoria-system"
 DIRECTORIO_CONFIG="/etc/auditoria-system"
 DIRECTORIO_ESTADO="/var/lib/auditoria-system"
+DIRECTORIO_AUTH="/var/lib/auditoria-system-auth"
 DIRECTORIO_LOG="/var/log/auditoria-system"
 
 SERVICIO_ORIGEN="${RAIZ_PROYECTO}/deploy/systemd/auditoria-agent.service"
@@ -19,6 +20,7 @@ SERVICIO_API_DESTINO="/etc/systemd/system/auditoria-api.service"
 USUARIO_API="auditoria-api"
 GRUPO_API="auditoria-api"
 BASE_DATOS="${DIRECTORIO_ESTADO}/auditoria.db"
+BASE_DATOS_AUTH="${DIRECTORIO_AUTH}/auth.db"
 
 if [[ "${EUID}" -ne 0 ]]; then
     echo "Error: este instalador debe ejecutarse como root." >&2
@@ -86,6 +88,13 @@ else
     echo "Usuario existente conservado: ${USUARIO_API}"
 fi
 
+install -d -o "${USUARIO_API}" -g "${GRUPO_API}" -m 0700 "${DIRECTORIO_AUTH}"
+
+if ! runuser -u "${USUARIO_API}" -- test -w "${DIRECTORIO_AUTH}"; then
+    echo "Error: ${USUARIO_API} no puede escribir en ${DIRECTORIO_AUTH}." >&2
+    exit 1
+fi
+
 systemctl daemon-reload
 
 systemctl enable --now auditoria-agent.service
@@ -133,7 +142,10 @@ echo
 echo "Auditoria System instalado correctamente."
 echo "Configuración: ${CONFIG_DESTINO}"
 echo "Estado:        ${DIRECTORIO_ESTADO}"
+echo "Autenticación: ${BASE_DATOS_AUTH}"
 echo "Logs:          ${DIRECTORIO_LOG}"
 echo "Agente:        auditoria-agent.service"
 echo "API local:     http://127.0.0.1:8000"
 echo "Usuario API:   ${USUARIO_API}"
+echo "Crear superadmin (sin contraseña por argumentos):"
+echo "  runuser -u ${USUARIO_API} -- ${RAIZ_PROYECTO}/.venv/bin/python -m app.auth create-superadmin"

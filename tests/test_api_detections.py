@@ -7,6 +7,7 @@ from app.api.main import create_app
 from app.core.config import AgentSettings
 from app.core.events import SecurityEvent
 from app.storage.event_repository import EventRepository
+from tests.api_test_helpers import create_test_auth_repository, login_test_user
 
 
 def build_client(
@@ -29,10 +30,14 @@ def build_client(
     application = create_app(
         settings=settings,
         repository=repository,
+        auth_repository=create_test_auth_repository(tmp_path),
     )
 
+    client = TestClient(application)
+    login_test_user(client)
+
     return (
-        TestClient(application),
+        client,
         repository,
     )
 

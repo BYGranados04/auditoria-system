@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import platform
 import sqlite3
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict
 
+from app.auth.config import AuthSettings, load_auth_settings
+from app.auth.repository import AuthenticatedSession, AuthRepository
+from app.auth.web import AuthManager, build_auth_router
 from app.core.config import AgentSettings, load_agent_settings
 from app.storage.event_repository import EventRepository
 
@@ -26,6 +30,25 @@ ResponseEventType = Literal[
 ]
 
 DASHBOARD_DIRECTORY = Path(__file__).with_name("dashboard")
+
+
+def _html_security_headers() -> dict[str, str]:
+    return {
+        "Cache-Control": "no-store",
+        "Content-Security-Policy": (
+            "default-src 'self'; "
+            "script-src 'self'; "
+            "style-src 'self'; "
+            "img-src 'self' data:; "
+            "connect-src 'self'; "
+            "object-src 'none'; "
+            "base-uri 'none'; "
+            "frame-ancestors 'none'; "
+            "form-action 'self'"
+        ),
+        "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
+    }
 
 
 class HealthResponse(BaseModel):
@@ -83,6 +106,9 @@ def create_app(
     *,
     settings: AgentSettings | None = None,
     repository: EventRepository | None = None,
+    auth_settings: AuthSettings | None = None,
+    auth_repository: AuthRepository | None = None,
+    clock: Callable[[], datetime] | None = None,
 ) -> FastAPI:
     resolved_settings = settings or load_agent_settings()
 
@@ -90,13 +116,42 @@ def create_app(
         resolved_settings.database_file,
         read_only=True,
     )
+    resolved_auth_settings = auth_settings or load_auth_settings()
+    resolved_auth_repository = auth_repository or AuthRepository(
+        resolved_auth_settings.database_file
+    )
+    auth_manager = AuthManager(
+        resolved_auth_repository,
+        resolved_auth_settings,
+        clock=clock,
+    )
 
     application = FastAPI(
         title="Auditoria System API",
         description=("API local de consulta para Auditoria System."),
         version="0.6.0-dev",
     )
+    application.include_router(build_auth_router(auth_manager))
 
+    @application.get(
+        "/login",
+        include_in_schema=False,
+        response_class=FileResponse,
+    )
+    def login_page(request: Request) -> Response:
+        if auth_manager.session_from_request(request) is not None:
+            return RedirectResponse("/dashboard", status_code=303)
+        return FileResponse(
+            DASHBOARD_DIRECTORY / "login.html",
+            media_type="text/html",
+            headers=_html_security_headers(),
+        )
+
+    @application.get(
+        "/dashboard/users",
+        include_in_schema=False,
+        response_class=FileResponse,
+    )
     @application.get(
         "/dashboard/responses",
         include_in_schema=False,
@@ -117,26 +172,16 @@ def create_app(
         include_in_schema=False,
         response_class=FileResponse,
     )
-    def dashboard() -> FileResponse:
+    def dashboard(request: Request) -> Response:
+        session = auth_manager.session_from_request(request)
+        if session is None:
+            return RedirectResponse("/login", status_code=303)
+        if request.url.path == "/dashboard/users" and session.role != "superadmin":
+            raise HTTPException(status_code=403, detail="Permisos insuficientes.")
         return FileResponse(
             DASHBOARD_DIRECTORY / "index.html",
             media_type="text/html",
-            headers={
-                "Cache-Control": "no-store",
-                "Content-Security-Policy": (
-                    "default-src 'self'; "
-                    "script-src 'self'; "
-                    "style-src 'self'; "
-                    "img-src 'self' data:; "
-                    "connect-src 'self'; "
-                    "object-src 'none'; "
-                    "base-uri 'none'; "
-                    "frame-ancestors 'none'; "
-                    "form-action 'none'"
-                ),
-                "Referrer-Policy": "no-referrer",
-                "X-Content-Type-Options": "nosniff",
-            },
+            headers=_html_security_headers(),
         )
 
     @application.get(
@@ -162,6 +207,17 @@ def create_app(
         )
 
     @application.get(
+        "/dashboard/assets/login.js",
+        include_in_schema=False,
+        response_class=FileResponse,
+    )
+    def login_script() -> FileResponse:
+        return FileResponse(
+            DASHBOARD_DIRECTORY / "login.js",
+            media_type="text/javascript",
+        )
+
+    @application.get(
         "/health",
         response_model=HealthResponse,
         tags=["system"],
@@ -177,7 +233,11 @@ def create_app(
         response_model=StatusResponse,
         tags=["system"],
     )
-    def system_status() -> StatusResponse:
+    def system_status(
+        _session: AuthenticatedSession = Depends(  # noqa: B008
+            auth_manager.require_authenticated
+        ),
+    ) -> StatusResponse:
         if not resolved_settings.database_file.is_file():
             raise HTTPException(
                 status_code=503,
@@ -228,6 +288,9 @@ def create_app(
             default=100,
             ge=1,
             le=1000,
+        ),
+        _session: AuthenticatedSession = Depends(  # noqa: B008
+            auth_manager.require_authenticated
         ),
     ) -> list[EventResponse]:
         _require_timezone(
@@ -298,6 +361,9 @@ def create_app(
             ge=1,
             le=1000,
         ),
+        _session: AuthenticatedSession = Depends(  # noqa: B008
+            auth_manager.require_authenticated
+        ),
     ) -> list[EventResponse]:
         _require_timezone(
             since,
@@ -365,6 +431,9 @@ def create_app(
             default=100,
             ge=1,
             le=1000,
+        ),
+        _session: AuthenticatedSession = Depends(  # noqa: B008
+            auth_manager.require_authenticated
         ),
     ) -> list[EventResponse]:
         _require_timezone(

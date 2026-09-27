@@ -12,6 +12,10 @@ Group=auditoria-api
 WorkingDirectory=/opt/auditoria-system
 
 EnvironmentFile=-/etc/auditoria-system/agent.env
+Environment=AUDITORIA_AUTH_DB=/var/lib/auditoria-system-auth/auth.db
+
+StateDirectory=auditoria-system-auth
+StateDirectoryMode=0700
 
 ExecStart=/opt/auditoria-system/.venv/bin/uvicorn app.api.main:app --host 127.0.0.1 --port 8000 --workers 1 --no-access-log
 

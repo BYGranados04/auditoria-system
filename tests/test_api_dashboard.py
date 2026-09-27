@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from app.api.main import create_app
 from app.core.config import AgentSettings
 from app.storage.event_repository import EventRepository
+from tests.api_test_helpers import create_test_auth_repository, login_test_user
 
 
 def build_client(tmp_path: Path) -> TestClient:
@@ -19,12 +20,15 @@ def build_client(tmp_path: Path) -> TestClient:
     repository = EventRepository(settings.database_file)
     repository.initialize()
 
-    return TestClient(
+    client = TestClient(
         create_app(
             settings=settings,
             repository=repository,
+            auth_repository=create_test_auth_repository(tmp_path),
         )
     )
+    login_test_user(client)
+    return client
 
 
 def test_dashboard_returns_html(tmp_path: Path) -> None:
@@ -102,6 +106,20 @@ def test_dashboard_local_assets_are_accessible(tmp_path: Path) -> None:
     assert '"/dashboard/responses"' in script.text
 
 
+def test_public_login_uses_csp_and_local_script(tmp_path: Path) -> None:
+    public_client = TestClient(build_client(tmp_path).app)
+
+    login = public_client.get("/login")
+    script = public_client.get("/dashboard/assets/login.js")
+
+    assert login.status_code == 200
+    assert "script-src 'self'" in login.headers["content-security-policy"]
+    assert "'unsafe-inline'" not in login.headers["content-security-policy"]
+    assert "/dashboard/assets/login.js" in login.text
+    assert script.status_code == 200
+    assert "innerHTML" not in script.text
+
+
 def test_dashboard_uses_supported_filters_and_overview_limits(tmp_path: Path) -> None:
     client = build_client(tmp_path)
     html = client.get("/dashboard").text
@@ -137,13 +155,23 @@ def test_dashboard_supports_empty_repository(tmp_path: Path) -> None:
     assert client.get("/responses").json() == []
 
 
-def test_application_exposes_no_mutating_operations(tmp_path: Path) -> None:
+def test_mutating_operations_are_limited_to_authentication_and_users(
+    tmp_path: Path,
+) -> None:
     application = build_client(tmp_path).app
-    forbidden_methods = {"POST", "PUT", "PATCH", "DELETE"}
+    allowed_post_paths = {
+        "/auth/login",
+        "/auth/logout",
+        "/admin/users",
+        "/admin/users/{user_id}/status",
+        "/admin/users/{user_id}/role",
+    }
 
     for route in application.routes:
         methods = getattr(route, "methods", set())
-        assert forbidden_methods.isdisjoint(methods)
+        assert {"PUT", "PATCH", "DELETE"}.isdisjoint(methods)
+        if "POST" in methods:
+            assert route.path in allowed_post_paths
 
 
 def test_dashboard_uses_local_assets_and_relative_api_paths(tmp_path: Path) -> None:
@@ -161,5 +189,5 @@ def test_dashboard_uses_local_assets_and_relative_api_paths(tmp_path: Path) -> N
 def test_dashboard_assets_are_included_as_package_data() -> None:
     project_configuration = Path("pyproject.toml").read_text(encoding="utf-8")
 
-    assert '[tool.setuptools.package-data]' in project_configuration
+    assert "[tool.setuptools.package-data]" in project_configuration
     assert '"app.api" = ["dashboard/*"]' in project_configuration

@@ -6,17 +6,21 @@ const MODULES = {
   "/dashboard/events": { key: "events", title: "Eventos" },
   "/dashboard/detections": { key: "detections", title: "Detecciones" },
   "/dashboard/responses": { key: "responses", title: "Respuestas" },
+  "/dashboard/users": { key: "users", title: "Usuarios" },
 };
 
 const normalizedPath = window.location.pathname.replace(/\/+$/, "") || "/dashboard";
 const currentModule = MODULES[normalizedPath] ?? MODULES["/dashboard"];
 let refreshInProgress = false;
 let refreshTimerId = null;
+let authContext = null;
 
 const elements = {
   apiIndicator: document.querySelector("#api-indicator"),
   apiStatus: document.querySelector("#api-status"),
   automaticBlocking: document.querySelector("#automatic-blocking"),
+  createUserForm: document.querySelector("#create-user-form"),
+  currentUser: document.querySelector("#current-user"),
   defenseApiStatus: document.querySelector("#status-api"),
   defenseHostname: document.querySelector("#status-hostname"),
   detectionsBody: document.querySelector("#detections-body"),
@@ -28,6 +32,7 @@ const elements = {
   globalAlert: document.querySelector("#global-alert"),
   hostname: document.querySelector("#hostname"),
   lastUpdated: document.querySelector("#last-updated"),
+  logoutButton: document.querySelector("#logout-button"),
   overviewDetectionsBody: document.querySelector("#overview-detections-body"),
   overviewEventsBody: document.querySelector("#overview-events-body"),
   refreshButton: document.querySelector("#refresh-button"),
@@ -35,6 +40,9 @@ const elements = {
   responsesBody: document.querySelector("#responses-body"),
   responsesCount: document.querySelector("#responses-count"),
   responsesFilters: document.querySelector("#responses-filters"),
+  usersAlert: document.querySelector("#users-alert"),
+  usersBody: document.querySelector("#users-body"),
+  usersCount: document.querySelector("#users-count"),
 };
 
 function makeElement(tag, className, value) {
@@ -84,11 +92,27 @@ function activateModule() {
     view.hidden = view.dataset.view !== currentModule.key;
   });
   document.querySelectorAll(".nav-item[data-module]").forEach((link) => {
+    if (link.dataset.module === "users") {
+      link.hidden = authContext?.role !== "superadmin";
+    }
     const active = link.dataset.module === currentModule.key;
     link.classList.toggle("is-active", active);
     if (active) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
   });
+}
+
+async function loadAuthContext() {
+  const response = await fetch("/auth/me", {
+    headers: { Accept: "application/json" },
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    window.location.assign("/login");
+    throw new Error("Authentication required");
+  }
+  authContext = await response.json();
+  elements.currentUser.textContent = `${authContext.username} · ${authContext.role}`;
 }
 
 function populateFiltersFromLocation() {
@@ -246,11 +270,103 @@ function renderResponses(responses) {
   elements.responsesBody.replaceChildren(...rows);
 }
 
+function showUsersAlert(message, error = true) {
+  elements.usersAlert.textContent = message;
+  elements.usersAlert.classList.toggle("is-success", !error);
+  elements.usersAlert.hidden = false;
+}
+
+async function authenticatedPost(path, body) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "X-CSRF-Token": authContext.csrf_token,
+    },
+    body: JSON.stringify(body),
+  });
+  if (response.status === 401) {
+    window.location.assign("/login");
+    throw new Error("Authentication required");
+  }
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail ?? `HTTP ${response.status}`);
+  }
+  if (response.status === 204) return null;
+  return response.json();
+}
+
+function renderUsers(users) {
+  elements.usersCount.textContent = `${users.length} usuarios`;
+  if (users.length === 0) {
+    elements.usersBody.replaceChildren(stateRow(5, "No hay usuarios registrados."));
+    return;
+  }
+  const rows = users.map((user) => {
+    const row = document.createElement("tr");
+    const roleSelect = document.createElement("select");
+    roleSelect.className = "table-select";
+    ["viewer", "superadmin"].forEach((role) => {
+      const option = makeElement("option", "", role);
+      option.value = role;
+      option.selected = user.role === role;
+      roleSelect.append(option);
+    });
+    roleSelect.setAttribute("aria-label", `Rol de ${user.username}`);
+    roleSelect.addEventListener("change", async () => {
+      try {
+        await authenticatedPost(`/admin/users/${user.id}/role`, {
+          role: roleSelect.value,
+        });
+        await refreshAndReschedule();
+      } catch (error) {
+        roleSelect.value = user.role;
+        showUsersAlert(error.message);
+      }
+    });
+    const roleCell = document.createElement("td");
+    roleCell.append(roleSelect);
+    const actionButton = makeElement(
+      "button",
+      "table-action",
+      user.active ? "Desactivar" : "Activar",
+    );
+    actionButton.type = "button";
+    actionButton.addEventListener("click", async () => {
+      try {
+        await authenticatedPost(`/admin/users/${user.id}/status`, {
+          active: !user.active,
+        });
+        await refreshAndReschedule();
+      } catch (error) {
+        showUsersAlert(error.message);
+      }
+    });
+    const actionCell = document.createElement("td");
+    actionCell.append(actionButton);
+    row.append(
+      makeElement("td", "monospace", user.username),
+      roleCell,
+      makeElement("td", user.active ? "user-active" : "user-inactive", user.active ? "Activo" : "Inactivo"),
+      makeElement("td", "timestamp", formatTimestamp(user.created_at)),
+      actionCell,
+    );
+    return row;
+  });
+  elements.usersBody.replaceChildren(...rows);
+}
+
 async function fetchJson(path) {
   const response = await fetch(path, {
     headers: { Accept: "application/json" },
     cache: "no-store",
   });
+  if (response.status === 401) {
+    window.location.assign("/login");
+    throw new Error("Authentication required");
+  }
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
 }
@@ -273,11 +389,13 @@ function moduleRequests() {
       "detections",
       fetchJson(endpointWithFilters("/detections", elements.detectionsFilters, 100)),
     ]);
-  } else {
+  } else if (currentModule.key === "responses") {
     requests.push([
       "responses",
       fetchJson(endpointWithFilters("/responses", elements.responsesFilters, 100)),
     ]);
+  } else {
+    requests.push(["users", fetchJson("/admin/users")]);
   }
   return requests;
 }
@@ -316,6 +434,14 @@ function renderModuleResult(key, result) {
     } else {
       elements.responsesBody.replaceChildren(
         stateRow(7, "No fue posible cargar las respuestas.", true),
+      );
+    }
+  }
+  if (key === "users") {
+    if (validList) renderUsers(result.value);
+    else {
+      elements.usersBody.replaceChildren(
+        stateRow(5, "No fue posible cargar los usuarios.", true),
       );
     }
   }
@@ -405,13 +531,46 @@ function configureFilters() {
   });
 }
 
-elements.refreshButton.addEventListener("click", refreshAndReschedule);
-document.addEventListener("visibilitychange", () => {
-  if (document.hidden) stopAutoRefresh();
-  else refreshAndReschedule();
-});
+function configureAccountActions() {
+  elements.logoutButton.addEventListener("click", async () => {
+    try {
+      await authenticatedPost("/auth/logout", {});
+    } finally {
+      window.location.assign("/login");
+    }
+  });
+  elements.createUserForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    elements.usersAlert.hidden = true;
+    const data = new FormData(elements.createUserForm);
+    try {
+      await authenticatedPost("/admin/users", {
+        username: data.get("username"),
+        password: data.get("password"),
+        role: data.get("role"),
+      });
+      elements.createUserForm.reset();
+      showUsersAlert("Usuario creado.", false);
+      await refreshAndReschedule();
+    } catch (error) {
+      showUsersAlert(error.message);
+    }
+  });
+}
 
-activateModule();
-populateFiltersFromLocation();
-configureFilters();
-refreshDashboard().finally(scheduleAutoRefresh);
+async function initializeDashboard() {
+  await loadAuthContext();
+  activateModule();
+  populateFiltersFromLocation();
+  configureFilters();
+  configureAccountActions();
+  elements.refreshButton.addEventListener("click", refreshAndReschedule);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) stopAutoRefresh();
+    else refreshAndReschedule();
+  });
+  await refreshDashboard();
+  scheduleAutoRefresh();
+}
+
+initializeDashboard();
