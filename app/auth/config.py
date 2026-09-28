@@ -11,6 +11,7 @@ class AuthSettings:
     session_seconds: int = 28_800
     cookie_secure: bool = False
     central_url: str | None = None
+    agent_offline_after_seconds: int = 120
 
 
 def _boolean(name: str, default: bool) -> bool:
@@ -34,6 +35,21 @@ def _session_seconds() -> int:
     return value if 300 <= value <= 86_400 else 28_800
 
 
+def _agent_offline_after_seconds() -> int:
+    raw = os.getenv("AUDITORIA_AGENT_OFFLINE_AFTER_SECONDS", "120")
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(
+            "AUDITORIA_AGENT_OFFLINE_AFTER_SECONDS debe ser un entero."
+        ) from exc
+    if not 10 <= value <= 86_400:
+        raise ValueError(
+            "AUDITORIA_AGENT_OFFLINE_AFTER_SECONDS debe estar entre 10 y 86400."
+        )
+    return value
+
+
 def load_auth_settings() -> AuthSettings:
     return AuthSettings(
         database_file=Path(
@@ -45,4 +61,5 @@ def load_auth_settings() -> AuthSettings:
         session_seconds=_session_seconds(),
         cookie_secure=_boolean("AUDITORIA_AUTH_COOKIE_SECURE", False),
         central_url=os.getenv("AUDITORIA_CENTRAL_URL"),
+        agent_offline_after_seconds=_agent_offline_after_seconds(),
     )

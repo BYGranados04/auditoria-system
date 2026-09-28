@@ -23,6 +23,8 @@ class AgentSettings:
     sync_batch_size: int = 50
     sync_retry_base_seconds: int = 5
     sync_retry_max_seconds: int = 300
+    heartbeat_interval: int = 30
+    agent_offline_after_seconds: int = 120
 
     @property
     def state_file(self) -> Path:
@@ -63,6 +65,24 @@ def _bounded_integer(
         return value
 
     return default
+
+
+def _required_bounded_integer(
+    name: str,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} debe ser un entero.") from exc
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} debe estar entre {minimum} y {maximum}.")
+    return value
 
 
 def _boolean(name: str, default: bool) -> bool:
@@ -112,6 +132,17 @@ def _trusted_admin_ips() -> tuple[str, ...]:
 
 
 def load_agent_settings() -> AgentSettings:
+    heartbeat_interval = _required_bounded_integer(
+        "AUDITORIA_HEARTBEAT_INTERVAL", 30, 5, 3600
+    )
+    offline_after_seconds = _required_bounded_integer(
+        "AUDITORIA_AGENT_OFFLINE_AFTER_SECONDS", 120, 10, 86400
+    )
+    if offline_after_seconds <= heartbeat_interval:
+        raise ValueError(
+            "AUDITORIA_AGENT_OFFLINE_AFTER_SECONDS debe ser mayor que "
+            "AUDITORIA_HEARTBEAT_INTERVAL."
+        )
     return AgentSettings(
         interval=_positive_integer(
             "AUDITORIA_INTERVAL",
@@ -177,4 +208,6 @@ def load_agent_settings() -> AgentSettings:
             1,
             86400,
         ),
+        heartbeat_interval=heartbeat_interval,
+        agent_offline_after_seconds=offline_after_seconds,
     )

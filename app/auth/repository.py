@@ -7,7 +7,7 @@ import re
 import secrets
 import sqlite3
 import threading
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -124,6 +124,23 @@ def _utc(value: datetime | None = None) -> datetime:
 
 def _timestamp(value: datetime) -> str:
     return _utc(value).isoformat()
+
+
+def derive_agent_presence(
+    agent: Mapping[str, object],
+    *,
+    now: datetime,
+    offline_after_seconds: int,
+) -> Literal["unknown", "online", "offline"]:
+    if offline_after_seconds <= 0:
+        raise ValueError("offline_after_seconds debe ser positivo.")
+    last_seen_at = agent["last_seen_at"]
+    if last_seen_at is None:
+        return "unknown"
+    seen_at = _utc(datetime.fromisoformat(str(last_seen_at)))
+    if _utc(now) - seen_at <= timedelta(seconds=offline_after_seconds):
+        return "online"
+    return "offline"
 
 
 def _digest_token(token: str) -> bytes:
@@ -688,12 +705,24 @@ class AuthRepository:
             return self._public_user(connection, updated)
 
     @staticmethod
-    def _public_agent(row: sqlite3.Row) -> dict[str, object]:
+    def _public_agent(
+        row: sqlite3.Row,
+        *,
+        now: datetime | None = None,
+        offline_after_seconds: int = 120,
+    ) -> dict[str, object]:
+        presence = derive_agent_presence(
+            row,
+            now=_utc(now),
+            offline_after_seconds=offline_after_seconds,
+        )
         return {
             "agent_id": str(row["agent_id"]),
             "owner_user_id": int(row["owner_user_id"]),
             "hostname": str(row["hostname"]),
-            "status": str(row["status"]),
+            # Kept for compatibility; presence is the source of truth.
+            "status": presence,
+            "presence": presence,
             "registered_at": str(row["registered_at"]),
             "last_seen_at": (
                 str(row["last_seen_at"])
@@ -831,6 +860,8 @@ class AuthRepository:
         self,
         *,
         owner_user_id: int | None = None,
+        now: datetime | None = None,
+        offline_after_seconds: int = 120,
     ) -> list[dict[str, object]]:
         self.initialize()
         parameters: tuple[object, ...] = ()
@@ -843,13 +874,22 @@ class AuthRepository:
                 f"SELECT * FROM agents{where} ORDER BY hostname, agent_id",
                 parameters,
             ).fetchall()
-        return [self._public_agent(row) for row in rows]
+        return [
+            self._public_agent(
+                row,
+                now=now,
+                offline_after_seconds=offline_after_seconds,
+            )
+            for row in rows
+        ]
 
     def get_agent(
         self,
         agent_id: str,
         *,
         owner_user_id: int | None = None,
+        now: datetime | None = None,
+        offline_after_seconds: int = 120,
     ) -> dict[str, object] | None:
         self.initialize()
         query = "SELECT * FROM agents WHERE agent_id = ?"
@@ -859,7 +899,15 @@ class AuthRepository:
             parameters.append(owner_user_id)
         with self._connection() as connection:
             row = connection.execute(query, parameters).fetchone()
-        return self._public_agent(row) if row is not None else None
+        return (
+            self._public_agent(
+                row,
+                now=now,
+                offline_after_seconds=offline_after_seconds,
+            )
+            if row is not None
+            else None
+        )
 
     def authenticate_agent_credential(
         self,
@@ -886,9 +934,9 @@ class AuthRepository:
     def record_agent_heartbeat(
         self,
         *,
-        agent_id: str,
         credential: str,
         now: datetime | None = None,
+        offline_after_seconds: int = 120,
     ) -> dict[str, object] | None:
         self.initialize()
         current = _utc(now)
@@ -896,33 +944,32 @@ class AuthRepository:
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT * FROM agents WHERE agent_id = ?", (agent_id,)
+                """
+                SELECT agents.*
+                FROM agent_credentials
+                JOIN agents ON agents.agent_id = agent_credentials.agent_id
+                JOIN users ON users.id = agents.owner_user_id
+                WHERE agent_credentials.credential_digest = ?
+                  AND agent_credentials.revoked_at IS NULL
+                  AND users.active = 1
+                """,
+                (_digest_token(credential),),
             ).fetchone()
             if row is None:
-                return None
-            credentials = connection.execute(
-                """
-                SELECT credential_digest
-                FROM agent_credentials
-                WHERE agent_id = ? AND revoked_at IS NULL
-                """,
-                (agent_id,),
-            ).fetchall()
-            candidate = _digest_token(credential)
-            if not any(
-                hmac.compare_digest(candidate, bytes(item["credential_digest"]))
-                for item in credentials
-            ):
                 return None
             connection.execute(
                 """
                 UPDATE agents
-                SET status = 'online', last_seen_at = ?, updated_at = ?
+                SET last_seen_at = ?, updated_at = ?
                 WHERE agent_id = ?
                 """,
-                (timestamp, timestamp, agent_id),
+                (timestamp, timestamp, str(row["agent_id"])),
             )
             updated = connection.execute(
-                "SELECT * FROM agents WHERE agent_id = ?", (agent_id,)
+                "SELECT * FROM agents WHERE agent_id = ?", (str(row["agent_id"]),)
             ).fetchone()
-            return self._public_agent(updated)
+            return self._public_agent(
+                updated,
+                now=current,
+                offline_after_seconds=offline_after_seconds,
+            )

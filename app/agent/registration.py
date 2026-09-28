@@ -55,6 +55,10 @@ def central_events_batch_url(central_url: str) -> str:
     return f"{normalize_central_url(central_url)}/agent/events/batch"
 
 
+def central_heartbeat_url(central_url: str) -> str:
+    return f"{normalize_central_url(central_url)}/agent/heartbeat"
+
+
 def load_identity(
     path: Path = DEFAULT_IDENTITY_FILE,
 ) -> AgentIdentity | None:

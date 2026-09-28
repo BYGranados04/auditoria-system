@@ -42,6 +42,7 @@ class AgentResponse(BaseModel):
     agent_id: str
     hostname: str
     status: str
+    presence: str
     registered_at: datetime
     last_seen_at: datetime | None
     created_at: datetime
@@ -70,7 +71,10 @@ class AgentEnrollResponse(BaseModel):
 
 class AgentHeartbeatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    agent_id: str = Field(min_length=16, max_length=255)
+    # Deprecated compatibility field. The bearer credential remains authoritative.
+    agent_id: str | None = Field(default=None, min_length=16, max_length=255)
+    hostname: str | None = Field(default=None, min_length=1, max_length=255)
+    agent_version: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 def _agent_response(agent: dict[str, object]) -> AgentResponse:
@@ -156,10 +160,18 @@ def build_agent_router(manager: AuthManager) -> APIRouter:
     ) -> AgentResponse:
         if credentials is None or credentials.scheme.casefold() != "bearer":
             raise HTTPException(status_code=401, detail="Credencial no válida.")
+        authenticated = manager.repository.authenticate_agent_credential(
+            credentials.credentials
+        )
+        if authenticated is None or (
+            data.agent_id is not None
+            and data.agent_id != str(authenticated["agent_id"])
+        ):
+            raise HTTPException(status_code=401, detail="Credencial no válida.")
         agent = manager.repository.record_agent_heartbeat(
-            agent_id=data.agent_id,
             credential=credentials.credentials,
             now=manager.clock(),
+            offline_after_seconds=manager.settings.agent_offline_after_seconds,
         )
         if agent is None:
             raise HTTPException(status_code=401, detail="Credencial no válida.")
@@ -180,6 +192,8 @@ def build_agent_router(manager: AuthManager) -> APIRouter:
             _agent_response(agent)
             for agent in manager.repository.list_agents(
                 owner_user_id=owner_user_id,
+                now=manager.clock(),
+                offline_after_seconds=manager.settings.agent_offline_after_seconds,
             )
         ]
 
@@ -198,6 +212,8 @@ def build_agent_router(manager: AuthManager) -> APIRouter:
         agent = manager.repository.get_agent(
             agent_id,
             owner_user_id=owner_user_id,
+            now=manager.clock(),
+            offline_after_seconds=manager.settings.agent_offline_after_seconds,
         )
         if agent is None:
             raise HTTPException(status_code=404, detail="Servidor no encontrado.")

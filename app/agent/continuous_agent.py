@@ -17,6 +17,7 @@ from uuid import UUID, uuid4
 import psutil
 
 from app.agent.event_store import LocalEventStore
+from app.agent.heartbeat import AgentHeartbeatSender, AgentHeartbeatWorker
 from app.agent.sync import AgentEventSynchronizer, AgentEventSyncWorker
 from app.core.config import AgentSettings, load_agent_settings
 from app.core.events import SecurityEvent
@@ -81,6 +82,11 @@ class ContinuousAgent:
             repository=self.event_repository,
         )
         self.event_sync_worker = AgentEventSyncWorker(self.event_synchronizer)
+        self.heartbeat_sender = AgentHeartbeatSender(
+            self.settings,
+            hostname=self.hostname,
+        )
+        self.heartbeat_worker = AgentHeartbeatWorker(self.heartbeat_sender)
         notification_settings = load_notification_settings()
         self.notification_service = NotificationService(
             settings=notification_settings,
@@ -782,6 +788,7 @@ class ContinuousAgent:
     def run_forever(self) -> None:
         self.event_repository.initialize()
         self.event_sync_worker.start()
+        self.heartbeat_worker.start()
         try:
             self.emit(
                 category="agent",
@@ -826,10 +833,15 @@ class ContinuousAgent:
             self.event_sync_worker.join(
                 timeout=self.settings.sync_timeout_seconds + 1
             )
+            self.heartbeat_worker.stop()
+            self.heartbeat_worker.join(
+                timeout=self.settings.sync_timeout_seconds + 1
+            )
 
     def stop(self, *_: Any) -> None:
         self.running = False
         self.event_sync_worker.stop()
+        self.heartbeat_worker.stop()
 
 
 def main() -> None:
