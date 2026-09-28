@@ -174,7 +174,7 @@ def test_viewer_scope_blocks_cross_host_reads_and_admin_endpoints(tmp_path) -> N
     status = viewer.get("/status")
     assert status.status_code == 200
     assert status.json()["total_events"] == 3
-    assert status.json()["live_response_blocks"] == 1
+    assert status.json()["live_response_blocks"] is None
     assert status.json()["hostname"] == "host-a"
 
     agents = viewer.get("/agents")

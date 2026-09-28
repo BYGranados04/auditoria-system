@@ -26,12 +26,14 @@ class FakeProvider:
 def event(
     severity="high",
     *,
+    agent_id="agt_test",
     category="detection",
     source="test",
     event_type="SSH_BRUTE_FORCE_ATTEMPT",
 ):
     return SecurityEvent(
         event_id=uuid4(),
+        agent_id=agent_id,
         timestamp=datetime.now(UTC),
         hostname="server-a",
         source=source,
@@ -63,6 +65,7 @@ def test_disabled_does_not_send(tmp_path):
     notifications, provider = service(tmp_path, enabled=False)
     assert notifications.notify(event()) is None
     assert provider.calls == 0
+    assert not notifications.repository.database_path.exists()
 
 
 def test_high_and_critical_are_sent(tmp_path):
@@ -105,6 +108,16 @@ def test_pending_is_deduplicated(tmp_path):
     assert first.id == second.id
     assert provider.calls == 1
     assert len(notifications.repository.list()) == 1
+
+
+def test_notification_persists_agent_id_from_security_event(tmp_path):
+    notifications, provider = service(tmp_path)
+
+    attempt = notifications.notify(event(agent_id="agt_owner_a"))
+
+    assert attempt.agent_id == "agt_owner_a"
+    assert notifications.repository.list()[0].agent_id == "agt_owner_a"
+    assert provider.calls == 1
 
 
 def test_incomplete_configuration_fails_without_provider_call(tmp_path):
@@ -158,3 +171,66 @@ def test_summary_is_exact_beyond_one_thousand_records(tmp_path):
         "critical": 201,
     }
     assert scoped["total"] == 1_001
+
+
+def test_legacy_schema_migrates_agent_id_without_backfill(tmp_path):
+    database = tmp_path / "notifications.db"
+    database.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """CREATE TABLE notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL,
+                channel TEXT NOT NULL, provider TEXT NOT NULL,
+                recipient TEXT NOT NULL, hostname TEXT NOT NULL,
+                severity TEXT NOT NULL, status TEXT NOT NULL,
+                created_at TEXT NOT NULL, sent_at TEXT, error TEXT,
+                provider_message_id TEXT,
+                UNIQUE(event_id, channel, recipient))"""
+        )
+        connection.execute(
+            "INSERT INTO notifications "
+            "(event_id, channel, provider, recipient, hostname, severity, "
+            "status, created_at) VALUES "
+            "('legacy', 'email', 'resend', 'ops@example.test', 'shared', "
+            "'high', 'sent', '2026-01-01T00:00:00+00:00')"
+        )
+
+    repository = NotificationRepository(database)
+    repository.initialize()
+
+    assert repository.list()[0].agent_id is None
+
+
+def test_read_only_legacy_schema_hides_unscoped_rows_from_agent_scope(tmp_path):
+    database = tmp_path / "notifications.db"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """CREATE TABLE notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL,
+                channel TEXT NOT NULL, provider TEXT NOT NULL,
+                recipient TEXT NOT NULL, hostname TEXT NOT NULL,
+                severity TEXT NOT NULL, status TEXT NOT NULL,
+                created_at TEXT NOT NULL, sent_at TEXT, error TEXT,
+                provider_message_id TEXT,
+                UNIQUE(event_id, channel, recipient))"""
+        )
+        connection.execute(
+            "INSERT INTO notifications "
+            "(event_id, channel, provider, recipient, hostname, severity, "
+            "status, created_at) VALUES "
+            "('legacy', 'email', 'resend', 'ops@example.test', 'shared', "
+            "'high', 'sent', '2026-01-01T00:00:00+00:00')"
+        )
+
+    repository = NotificationRepository(database, read_only=True)
+
+    assert repository.list(agent_ids=("agt_viewer",)) == []
+    assert repository.summary(agent_ids=("agt_viewer",)) == {
+        "total": 0,
+        "pending": 0,
+        "sent": 0,
+        "failed": 0,
+        "high": 0,
+        "critical": 0,
+    }
+    assert repository.list()[0].agent_id is None

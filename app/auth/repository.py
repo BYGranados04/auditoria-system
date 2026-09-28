@@ -799,21 +799,6 @@ class AuthRepository:
                 raise AuthValidationError("Token de registro no válido o expirado.")
 
             owner_user_id = int(token_row["owner_user_id"])
-            conflicting_owner = connection.execute(
-                """
-                SELECT owner_user_id
-                FROM agents
-                WHERE hostname = ?
-                  AND owner_user_id != ?
-                LIMIT 1
-                """,
-                (normalized_hostname, owner_user_id),
-            ).fetchone()
-            if conflicting_owner is not None:
-                raise AuthConflictError(
-                    "El hostname ya está asociado a otra cuenta."
-                )
-
             agent_id = f"agt_{secrets.token_urlsafe(24)}"
             credential = f"agc_{secrets.token_urlsafe(32)}"
             connection.execute(

@@ -53,6 +53,7 @@ class NotificationService:
         recipient = self.settings.recipient or ""
         attempt, created = self.repository.create_pending(
             event_id=str(event.event_id),
+            agent_id=event.agent_id,
             provider=self.provider.name,
             recipient=recipient,
             hostname=event.hostname,

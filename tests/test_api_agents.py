@@ -374,3 +374,76 @@ def test_enrollment_cannot_choose_or_modify_owner_user_id(tmp_path: Path) -> Non
 
     assert rejected.status_code == 422
     assert owner_user_id == users["viewer-a"]
+
+
+def test_different_owners_can_enroll_same_hostname_with_isolated_identity(
+    tmp_path: Path,
+) -> None:
+    current = [datetime(2026, 1, 1, tzinfo=UTC)]
+    root, repository, users = build_application(
+        tmp_path,
+        clock=lambda: current[0],
+    )
+    viewer_a = TestClient(root.app)
+    viewer_b = TestClient(root.app)
+    enrolled_a = enroll_agent(
+        root,
+        create_registration_token(viewer_a, login_as(viewer_a, "viewer-a")),
+        "shared-host",
+    )
+    enrolled_b = enroll_agent(
+        root,
+        create_registration_token(viewer_b, login_as(viewer_b, "viewer-b")),
+        "shared-host",
+    )
+
+    assert enrolled_a["agent_id"] != enrolled_b["agent_id"]
+    assert enrolled_a["credential"] != enrolled_b["credential"]
+    with sqlite3.connect(repository.database_path) as connection:
+        ownership = dict(
+            connection.execute(
+                "SELECT agent_id, owner_user_id FROM agents WHERE hostname = ?",
+                ("shared-host",),
+            ).fetchall()
+        )
+    assert ownership == {
+        enrolled_a["agent_id"]: users["viewer-a"],
+        enrolled_b["agent_id"]: users["viewer-b"],
+    }
+
+    current[0] += timedelta(seconds=1)
+    heartbeat_a = root.post(
+        "/agent/heartbeat",
+        headers={"Authorization": f"Bearer {enrolled_a['credential']}"},
+        json={},
+    )
+    with sqlite3.connect(repository.database_path) as connection:
+        last_seen = dict(
+            connection.execute(
+                "SELECT agent_id, last_seen_at FROM agents WHERE hostname = ?",
+                ("shared-host",),
+            ).fetchall()
+        )
+
+    assert heartbeat_a.status_code == 200
+    assert last_seen[enrolled_a["agent_id"]] == current[0].isoformat()
+    assert last_seen[enrolled_b["agent_id"]] is None
+
+    first_seen_a = last_seen[enrolled_a["agent_id"]]
+    current[0] += timedelta(seconds=1)
+    heartbeat_b = root.post(
+        "/agent/heartbeat",
+        headers={"Authorization": f"Bearer {enrolled_b['credential']}"},
+        json={},
+    )
+    with sqlite3.connect(repository.database_path) as connection:
+        last_seen = dict(
+            connection.execute(
+                "SELECT agent_id, last_seen_at FROM agents WHERE hostname = ?",
+                ("shared-host",),
+            ).fetchall()
+        )
+
+    assert heartbeat_b.status_code == 200
+    assert last_seen[enrolled_a["agent_id"]] == first_seen_a
+    assert last_seen[enrolled_b["agent_id"]] == current[0].isoformat()

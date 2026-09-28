@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import platform
 import sqlite3
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -64,13 +63,16 @@ class StatusResponse(BaseModel):
 
     status: str
     service: str
+    agent_id: str | None
     hostname: str
+    presence: Literal["unknown", "online", "offline"] | None
+    last_seen_at: datetime | None
 
-    response_mode: str
-    automatic_blocking_enabled: bool
+    response_mode: str | None
+    automatic_blocking_enabled: bool | None
 
     total_events: int
-    live_response_blocks: int
+    live_response_blocks: int | None
     by_severity: dict[str, int]
 
 
@@ -116,10 +118,6 @@ def create_app(
 ) -> FastAPI:
     resolved_settings = settings or load_agent_settings()
 
-    resolved_repository = repository or EventRepository(
-        resolved_settings.database_file,
-        read_only=True,
-    )
     resolved_auth_settings = auth_settings or load_auth_settings()
     resolved_auth_repository = auth_repository or AuthRepository(
         resolved_auth_settings.database_file
@@ -270,52 +268,51 @@ def create_app(
         tags=["system"],
     )
     def system_status(
+        agent_id: str | None = None,
         session: AuthenticatedSession = Depends(  # noqa: B008
             auth_manager.require_authenticated
         ),
     ) -> StatusResponse:
-        if not resolved_settings.database_file.is_file():
-            raise HTTPException(
-                status_code=503,
-                detail="Base de datos no disponible.",
-            )
-
         try:
-            allowed_hostnames = auth_manager.get_allowed_hostnames(session)
-            statistics = resolved_repository.statistics(hostnames=allowed_hostnames)
-
-            live_blocks = resolved_repository.list_live_response_blocks(
-                now=datetime.now(UTC),
-                hostnames=allowed_hostnames,
+            allowed_agent_ids = auth_manager.resolve_agent_scope(session, agent_id)
+            statistics = resolved_central_repository.statistics(
+                agent_ids=allowed_agent_ids
             )
+            owner_user_id = None if session.role == "superadmin" else session.user_id
+            agents = resolved_auth_repository.list_agents(
+                owner_user_id=owner_user_id,
+                now=auth_manager.clock(),
+                offline_after_seconds=(
+                    resolved_auth_settings.agent_offline_after_seconds
+                ),
+            )
+            if agent_id is not None:
+                agents = [item for item in agents if item["agent_id"] == agent_id]
         except sqlite3.Error as exc:
             raise HTTPException(
                 status_code=503,
                 detail="Base de datos no disponible.",
             ) from exc
 
-        automatic_blocking_enabled = (
-            resolved_settings.response_mode == "automatic"
-            and resolved_settings.allow_temporary_ip_block
-        )
-
-        if allowed_hostnames is None:
-            status_hostname = platform.node()
-        elif len(allowed_hostnames) == 1:
-            status_hostname = allowed_hostnames[0]
-        elif allowed_hostnames:
-            status_hostname = f"{len(allowed_hostnames)} servidores"
+        selected = agents[0] if len(agents) == 1 else None
+        if selected is not None:
+            status_hostname = str(selected["hostname"])
+        elif agents:
+            status_hostname = f"{len(agents)} servidores"
         else:
             status_hostname = "Sin servidores asignados"
 
         return StatusResponse(
             status="ok",
             service="auditoria-system-api",
+            agent_id=str(selected["agent_id"]) if selected is not None else None,
             hostname=status_hostname,
-            response_mode=(resolved_settings.response_mode),
-            automatic_blocking_enabled=(automatic_blocking_enabled),
+            presence=(str(selected["presence"]) if selected is not None else None),
+            last_seen_at=(selected["last_seen_at"] if selected is not None else None),
+            response_mode=None,
+            automatic_blocking_enabled=None,
             total_events=statistics["total"],
-            live_response_blocks=len(live_blocks),
+            live_response_blocks=None,
             by_severity=statistics["by_severity"],
         )
 

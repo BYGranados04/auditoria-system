@@ -29,17 +29,22 @@ def build_client(tmp_path: Path, *, populate_notifications: bool = True):
         users[name] = int(
             auth.create_user(username=name, password=TEST_PASSWORD, role=role)["id"]
         )
+    agents = {}
     for name, hostname in (("viewer-a", "host-a"), ("viewer-b", "host-b")):
         token = auth.create_agent_registration_token(users[name])
-        auth.enroll_agent(registration_token=token.token, hostname=hostname)
+        enrolled = auth.enroll_agent(
+            registration_token=token.token, hostname=hostname
+        )
+        agents[name] = str(enrolled.agent["agent_id"])
     notifications = NotificationRepository(settings.state_dir / "notifications.db")
     if populate_notifications:
-        for hostname, severity, status in (
-            ("host-a", "high", "sent"),
-            ("host-b", "critical", "failed"),
+        for owner, hostname, severity, status in (
+            ("viewer-a", "host-a", "high", "sent"),
+            ("viewer-b", "host-b", "critical", "failed"),
         ):
             attempt, _ = notifications.create_pending(
                 event_id=str(uuid4()),
+                agent_id=agents[owner],
                 provider="resend",
                 recipient="ops@example.test",
                 hostname=hostname,
@@ -56,7 +61,7 @@ def build_client(tmp_path: Path, *, populate_notifications: bool = True):
         auth_settings=AuthSettings(database_file=auth.database_path),
         auth_repository=auth,
     )
-    return TestClient(app), notifications
+    return TestClient(app), notifications, agents
 
 
 def login(client, username):
@@ -67,24 +72,25 @@ def login(client, username):
 
 
 def test_notifications_require_session(tmp_path):
-    client, _ = build_client(tmp_path)
+    client, _, _ = build_client(tmp_path)
     assert client.get("/notifications").status_code == 401
 
 
 def test_viewer_scope_and_detail_are_enforced(tmp_path):
-    root, notifications = build_client(tmp_path)
+    root, notifications, agents = build_client(tmp_path)
     viewer_a, viewer_b = TestClient(root.app), TestClient(root.app)
     login(viewer_a, "viewer-a")
     login(viewer_b, "viewer-b")
     own = viewer_a.get("/notifications")
     other = next(item for item in notifications.list() if item.hostname == "host-b")
     assert [item["hostname"] for item in own.json()] == ["host-a"]
+    assert [item["agent_id"] for item in own.json()] == [agents["viewer-a"]]
     assert viewer_b.get(f"/notifications/{other.id}").status_code == 200
     assert viewer_a.get(f"/notifications/{other.id}").status_code == 404
 
 
 def test_superadmin_filters_and_summary(tmp_path):
-    client, _ = build_client(tmp_path)
+    client, _, _ = build_client(tmp_path)
     login(client, "admin")
     assert len(client.get("/notifications").json()) == 2
     assert [
@@ -107,15 +113,60 @@ def test_superadmin_filters_and_summary(tmp_path):
 
 
 def test_viewer_empty_scope_and_summary(tmp_path):
-    root, _ = build_client(tmp_path)
+    root, _, _ = build_client(tmp_path)
     client = TestClient(root.app)
     login(client, "viewer-empty")
     assert client.get("/notifications").json() == []
     assert client.get("/notifications/summary").json()["total"] == 0
 
 
+def test_agent_scope_isolated_with_same_hostname_and_legacy_hidden(tmp_path):
+    root, notifications, agents = build_client(
+        tmp_path, populate_notifications=False
+    )
+    for owner in ("viewer-a", "viewer-b"):
+        attempt, _ = notifications.create_pending(
+            event_id=str(uuid4()),
+            agent_id=agents[owner],
+            provider="resend",
+            recipient="ops@example.test",
+            hostname="shared-host",
+            severity="high",
+        )
+        notifications.complete(attempt.id, provider_message_id=f"msg-{owner}")
+    legacy, _ = notifications.create_pending(
+        event_id=str(uuid4()),
+        provider="resend",
+        recipient="ops@example.test",
+        hostname="shared-host",
+        severity="high",
+    )
+    notifications.complete(legacy.id, provider_message_id="msg-legacy")
+
+    viewer_a = TestClient(root.app)
+    viewer_b = TestClient(root.app)
+    admin = TestClient(root.app)
+    login(viewer_a, "viewer-a")
+    login(viewer_b, "viewer-b")
+    login(admin, "admin")
+
+    own_a = viewer_a.get(
+        "/notifications", params={"hostname": "shared-host"}
+    ).json()
+    own_b = viewer_b.get(
+        "/notifications", params={"hostname": "shared-host"}
+    ).json()
+
+    assert [item["agent_id"] for item in own_a] == [agents["viewer-a"]]
+    assert [item["agent_id"] for item in own_b] == [agents["viewer-b"]]
+    assert viewer_a.get(f"/notifications/{legacy.id}").status_code == 404
+    assert len(admin.get("/notifications").json()) == 3
+
+
 def test_api_returns_empty_results_without_notifications_database(tmp_path):
-    client, notifications = build_client(tmp_path, populate_notifications=False)
+    client, notifications, _ = build_client(
+        tmp_path, populate_notifications=False
+    )
     assert not notifications.database_path.exists()
     login(client, "admin")
 
@@ -133,7 +184,7 @@ def test_api_returns_empty_results_without_notifications_database(tmp_path):
 
 
 def test_read_only_repository_cannot_modify_existing_database(tmp_path):
-    _, writable = build_client(tmp_path)
+    _, writable, _ = build_client(tmp_path)
     before = writable.database_path.read_bytes()
     read_only = NotificationRepository(writable.database_path, read_only=True)
 
@@ -146,7 +197,7 @@ def test_read_only_repository_cannot_modify_existing_database(tmp_path):
 
 
 def test_dashboard_notifications_is_authenticated_and_safe(tmp_path):
-    client, _ = build_client(tmp_path)
+    client, _, _ = build_client(tmp_path)
     assert (
         client.get("/dashboard/notifications", follow_redirects=False).status_code
         == 303

@@ -337,3 +337,41 @@ class CentralEventRepository:
                 parameters,
             ).fetchall()
         return [self._record(row) for row in rows]
+
+    def statistics(
+        self,
+        *,
+        agent_ids: tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        empty = {
+            "total": 0,
+            "by_severity": {
+                "low": 0,
+                "medium": 0,
+                "high": 0,
+                "critical": 0,
+            },
+        }
+        if agent_ids == () or not self.database_path.is_file():
+            return empty
+        parameters: list[object] = []
+        where = ""
+        if agent_ids is not None:
+            placeholders = ", ".join("?" for _ in agent_ids)
+            where = f" WHERE agent_id IN ({placeholders})"
+            parameters.extend(agent_ids)
+        with self._read_connection() as connection:
+            rows = connection.execute(
+                "SELECT severity, COUNT(*) AS count FROM events"
+                f"{where} GROUP BY severity",
+                parameters,
+            ).fetchall()
+        by_severity = dict(empty["by_severity"])
+        for row in rows:
+            severity = str(row["severity"])
+            if severity in by_severity:
+                by_severity[severity] = int(row["count"])
+        return {
+            "total": sum(by_severity.values()),
+            "by_severity": by_severity,
+        }

@@ -128,23 +128,6 @@ class AuthManager:
             raise HTTPException(status_code=404, detail="Servidor no encontrado.")
         return (requested_agent_id,)
 
-    def resolve_hostname_scope(
-        self,
-        session: AuthenticatedSession,
-        requested_hostname: str | None,
-    ) -> tuple[str, ...] | None:
-        allowed = self.get_allowed_hostnames(session)
-        if (
-            requested_hostname is not None
-            and allowed is not None
-            and requested_hostname not in allowed
-        ):
-            raise HTTPException(
-                status_code=403,
-                detail="No tiene acceso al hostname solicitado.",
-            )
-        return allowed
-
     @staticmethod
     def verify_same_origin(request: Request) -> None:
         expected = str(request.base_url).rstrip("/")
