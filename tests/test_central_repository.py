@@ -46,12 +46,26 @@ def test_central_config_uses_dedicated_default_and_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("AUDITORIA_CENTRAL_DB", raising=False)
-    assert load_central_settings().database_file == Path(
+    monkeypatch.delenv("AUDITORIA_AGENT_EVENT_BATCH_MAX", raising=False)
+    monkeypatch.delenv("AUDITORIA_EVENT_MAX_FUTURE_SECONDS", raising=False)
+    monkeypatch.delenv("AUDITORIA_EVENT_EVIDENCE_MAX_BYTES", raising=False)
+    defaults = load_central_settings()
+    assert defaults.database_file == Path(
         "/var/lib/auditoria-system-central/central.db"
     )
+    assert defaults.agent_event_batch_max == 100
+    assert defaults.event_max_future_seconds == 300
+    assert defaults.event_evidence_max_bytes == 65_536
 
     monkeypatch.setenv("AUDITORIA_CENTRAL_DB", "custom/central.db")
-    assert load_central_settings().database_file == Path("custom/central.db")
+    monkeypatch.setenv("AUDITORIA_AGENT_EVENT_BATCH_MAX", "25")
+    monkeypatch.setenv("AUDITORIA_EVENT_MAX_FUTURE_SECONDS", "90")
+    monkeypatch.setenv("AUDITORIA_EVENT_EVIDENCE_MAX_BYTES", "8192")
+    configured = load_central_settings()
+    assert configured.database_file == Path("custom/central.db")
+    assert configured.agent_event_batch_max == 25
+    assert configured.event_max_future_seconds == 90
+    assert configured.event_evidence_max_bytes == 8_192
 
 
 def test_central_database_creation_schema_indexes_and_wal(tmp_path: Path) -> None:

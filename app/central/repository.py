@@ -5,6 +5,7 @@ import json
 import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,13 @@ from app.core.events import SecurityEvent
 
 class CentralEventConflictError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class CentralBatchResult:
+    accepted: int
+    inserted: int
+    duplicates: int
 
 
 def _utc_timestamp(value: datetime) -> str:
@@ -143,71 +151,116 @@ class CentralEventRepository:
         agent_id: str,
         event: SecurityEvent,
     ) -> tuple[dict[str, Any], bool]:
+        result, records = self._add_events(
+            agent_id=agent_id,
+            events=(event,),
+        )
+        return records[0], result.inserted == 1
+
+    def add_events(
+        self,
+        *,
+        agent_id: str,
+        events: tuple[SecurityEvent, ...],
+    ) -> CentralBatchResult:
+        result, _ = self._add_events(agent_id=agent_id, events=events)
+        return result
+
+    def _add_events(
+        self,
+        *,
+        agent_id: str,
+        events: tuple[SecurityEvent, ...],
+    ) -> tuple[CentralBatchResult, list[dict[str, Any]]]:
         normalized_agent_id = agent_id.strip()
         if not normalized_agent_id:
             raise ValueError("agent_id es obligatorio.")
+        if not events:
+            raise ValueError("El batch no puede estar vacío.")
 
         self.initialize()
-        payload_hash = event_payload_hash(event)
-        data = event.model_dump(mode="json")
-        occurred_at = _utc_timestamp(event.timestamp)
         received_at = _utc_timestamp(self.clock())
-        evidence_json = json.dumps(
-            data["evidence"],
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        )
-
-        with self._connection() as connection:
-            cursor = connection.execute(
-                """
-                INSERT OR IGNORE INTO events (
-                    agent_id,
-                    event_id,
-                    occurred_at,
-                    received_at,
-                    hostname,
-                    source,
-                    category,
-                    event_type,
-                    severity,
-                    description,
-                    evidence_json,
-                    payload_hash
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
+        prepared: list[tuple[dict[str, Any], str, str, str]] = []
+        for event in events:
+            data = event.model_dump(mode="json")
+            prepared.append(
                 (
-                    normalized_agent_id,
-                    data["event_id"],
-                    occurred_at,
-                    received_at,
-                    data["hostname"],
-                    data["source"],
-                    data["category"],
-                    data["event_type"],
-                    data["severity"],
-                    data["description"],
-                    evidence_json,
-                    payload_hash,
-                ),
-            )
-            row = connection.execute(
-                """
-                SELECT *
-                FROM events
-                WHERE agent_id = ? AND event_id = ?
-                """,
-                (normalized_agent_id, data["event_id"]),
-            ).fetchone()
-            if row is None:
-                raise RuntimeError("No se pudo persistir el evento central.")
-            if cursor.rowcount == 0 and str(row["payload_hash"]) != payload_hash:
-                raise CentralEventConflictError(
-                    "El event_id ya existe para el agente con otro payload."
+                    data,
+                    _utc_timestamp(event.timestamp),
+                    json.dumps(
+                        data["evidence"],
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    ),
+                    event_payload_hash(event),
                 )
-            return self._record(row), cursor.rowcount == 1
+            )
+
+        inserted = 0
+        records: list[dict[str, Any]] = []
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for data, occurred_at, evidence_json, payload_hash in prepared:
+                cursor = connection.execute(
+                    """
+                    INSERT OR IGNORE INTO events (
+                        agent_id,
+                        event_id,
+                        occurred_at,
+                        received_at,
+                        hostname,
+                        source,
+                        category,
+                        event_type,
+                        severity,
+                        description,
+                        evidence_json,
+                        payload_hash
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        normalized_agent_id,
+                        data["event_id"],
+                        occurred_at,
+                        received_at,
+                        data["hostname"],
+                        data["source"],
+                        data["category"],
+                        data["event_type"],
+                        data["severity"],
+                        data["description"],
+                        evidence_json,
+                        payload_hash,
+                    ),
+                )
+                row = connection.execute(
+                    """
+                    SELECT *
+                    FROM events
+                    WHERE agent_id = ? AND event_id = ?
+                    """,
+                    (normalized_agent_id, data["event_id"]),
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("No se pudo persistir el evento central.")
+                if cursor.rowcount == 0 and str(row["payload_hash"]) != payload_hash:
+                    raise CentralEventConflictError(
+                        "El event_id ya existe para el agente con otro payload."
+                    )
+                inserted += cursor.rowcount
+                records.append(self._record(row))
+
+        accepted = len(events)
+        return (
+            CentralBatchResult(
+                accepted=accepted,
+                inserted=inserted,
+                duplicates=accepted - inserted,
+            ),
+            records,
+        )
 
     def list_events(
         self,

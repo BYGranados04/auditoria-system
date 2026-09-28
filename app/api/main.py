@@ -11,10 +11,13 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict
 
+from app.agents.events import build_agent_event_router
 from app.agents.web import build_agent_router
 from app.auth.config import AuthSettings, load_auth_settings
 from app.auth.repository import AuthenticatedSession, AuthRepository
 from app.auth.web import AuthManager, build_auth_router
+from app.central.config import CentralSettings, load_central_settings
+from app.central.repository import CentralEventRepository
 from app.core.config import AgentSettings, load_agent_settings
 from app.notifications.repository import NotificationRepository
 from app.notifications.web import build_notification_router
@@ -111,6 +114,8 @@ def create_app(
     repository: EventRepository | None = None,
     auth_settings: AuthSettings | None = None,
     auth_repository: AuthRepository | None = None,
+    central_settings: CentralSettings | None = None,
+    central_repository: CentralEventRepository | None = None,
     clock: Callable[[], datetime] | None = None,
 ) -> FastAPI:
     resolved_settings = settings or load_agent_settings()
@@ -128,6 +133,11 @@ def create_app(
         resolved_auth_settings,
         clock=clock,
     )
+    resolved_central_settings = central_settings or load_central_settings()
+    resolved_central_repository = central_repository or CentralEventRepository(
+        resolved_central_settings.database_file,
+        clock=auth_manager.clock,
+    )
 
     application = FastAPI(
         title="Auditoria System API",
@@ -136,6 +146,13 @@ def create_app(
     )
     application.include_router(build_auth_router(auth_manager))
     application.include_router(build_agent_router(auth_manager))
+    application.include_router(
+        build_agent_event_router(
+            auth_manager,
+            resolved_central_repository,
+            resolved_central_settings,
+        )
+    )
     application.include_router(
         build_notification_router(
             auth_manager,
