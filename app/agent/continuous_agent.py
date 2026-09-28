@@ -16,6 +16,8 @@ from uuid import UUID, uuid4
 
 import psutil
 
+from app.agent.event_store import LocalEventStore
+from app.agent.sync import AgentEventSynchronizer, AgentEventSyncWorker
 from app.core.config import AgentSettings, load_agent_settings
 from app.core.events import SecurityEvent
 from app.detection.ssh_collector import SSHJournalCollector
@@ -69,6 +71,16 @@ class ContinuousAgent:
         )
         self.response_engine = ResponsePolicyEngine(self.response_policy)
         self.response_executor = self._build_response_executor()
+        self.event_repository = EventRepository(self.settings.database_file)
+        self.event_store = LocalEventStore(
+            self.event_repository,
+            self.settings.identity_file,
+        )
+        self.event_synchronizer = AgentEventSynchronizer(
+            self.settings,
+            repository=self.event_repository,
+        )
+        self.event_sync_worker = AgentEventSyncWorker(self.event_synchronizer)
         notification_settings = load_notification_settings()
         self.notification_service = NotificationService(
             settings=notification_settings,
@@ -328,13 +340,9 @@ class ContinuousAgent:
             evidence=evidence,
         )
 
-        event = event_model.model_dump(mode="json")
-
         self._ensure_runtime_dirs()
-
-        repository = EventRepository(self.settings.database_file)
-        repository.initialize()
-        repository.add(event_model)
+        event_model = self.event_store.persist(event_model)
+        event = event_model.model_dump(mode="json")
 
         try:
             self.notification_service.notify(event_model)
@@ -772,47 +780,56 @@ class ContinuousAgent:
         self.save_state(current)
 
     def run_forever(self) -> None:
-        self.emit(
-            category="agent",
-            event_type="AGENT_STARTED",
-            severity="low",
-            description="El agente de monitoreo fue iniciado.",
-            evidence={
-                "interval_seconds": self.interval,
-            },
-        )
+        self.event_repository.initialize()
+        self.event_sync_worker.start()
+        try:
+            self.emit(
+                category="agent",
+                event_type="AGENT_STARTED",
+                severity="low",
+                description="El agente de monitoreo fue iniciado.",
+                evidence={
+                    "interval_seconds": self.interval,
+                },
+            )
 
-        self._recover_response_state()
+            self._recover_response_state()
 
-        if self.load_state() is None:
-            self.initialize_baseline()
+            if self.load_state() is None:
+                self.initialize_baseline()
 
-        while self.running:
-            try:
-                self.run_once()
-                time.sleep(self.interval)
-            except Exception as exc:
-                self.emit(
-                    category="agent",
-                    event_type="AGENT_ERROR",
-                    severity="medium",
-                    description="El agente encontró un error.",
-                    evidence={
-                        "error": str(exc),
-                    },
-                )
-                time.sleep(self.interval)
+            while self.running:
+                try:
+                    self.run_once()
+                    time.sleep(self.interval)
+                except Exception as exc:
+                    self.emit(
+                        category="agent",
+                        event_type="AGENT_ERROR",
+                        severity="medium",
+                        description="El agente encontró un error.",
+                        evidence={
+                            "error": str(exc),
+                        },
+                    )
+                    time.sleep(self.interval)
 
-        self.emit(
-            category="agent",
-            event_type="AGENT_STOPPED",
-            severity="low",
-            description="El agente de monitoreo fue detenido.",
-            evidence={},
-        )
+            self.emit(
+                category="agent",
+                event_type="AGENT_STOPPED",
+                severity="low",
+                description="El agente de monitoreo fue detenido.",
+                evidence={},
+            )
+        finally:
+            self.event_sync_worker.stop()
+            self.event_sync_worker.join(
+                timeout=self.settings.sync_timeout_seconds + 1
+            )
 
     def stop(self, *_: Any) -> None:
         self.running = False
+        self.event_sync_worker.stop()
 
 
 def main() -> None:

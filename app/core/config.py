@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+DEFAULT_AGENT_IDENTITY_FILE = Path("/etc/auditoria-system/agent-identity.json")
+
 
 @dataclass(frozen=True)
 class AgentSettings:
@@ -15,6 +17,12 @@ class AgentSettings:
     trusted_admin_ips: tuple[str, ...] = ()
     allow_temporary_ip_block: bool = False
     temporary_block_seconds: int = 900
+    identity_file: Path = DEFAULT_AGENT_IDENTITY_FILE
+    sync_interval: int = 10
+    sync_timeout_seconds: int = 5
+    sync_batch_size: int = 50
+    sync_retry_base_seconds: int = 5
+    sync_retry_max_seconds: int = 300
 
     @property
     def state_file(self) -> Path:
@@ -131,6 +139,42 @@ def load_agent_settings() -> AgentSettings:
             "AUDITORIA_TEMPORARY_BLOCK_SECONDS",
             900,
             60,
+            86400,
+        ),
+        identity_file=Path(
+            os.getenv(
+                "AUDITORIA_AGENT_IDENTITY_FILE",
+                str(DEFAULT_AGENT_IDENTITY_FILE),
+            )
+        ),
+        sync_interval=_bounded_integer(
+            "AUDITORIA_SYNC_INTERVAL",
+            10,
+            1,
+            3600,
+        ),
+        sync_timeout_seconds=_bounded_integer(
+            "AUDITORIA_SYNC_TIMEOUT_SECONDS",
+            5,
+            1,
+            60,
+        ),
+        sync_batch_size=_bounded_integer(
+            "AUDITORIA_SYNC_BATCH_SIZE",
+            50,
+            1,
+            100,
+        ),
+        sync_retry_base_seconds=_bounded_integer(
+            "AUDITORIA_SYNC_RETRY_BASE_SECONDS",
+            5,
+            1,
+            3600,
+        ),
+        sync_retry_max_seconds=_bounded_integer(
+            "AUDITORIA_SYNC_RETRY_MAX_SECONDS",
+            300,
+            1,
             86400,
         ),
     )

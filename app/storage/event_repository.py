@@ -4,11 +4,19 @@ import json
 import sqlite3
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from app.core.events import SecurityEvent
+
+
+@dataclass(frozen=True)
+class PendingOutboxEvent:
+    event: SecurityEvent
+    attempt_count: int
+    next_attempt_at: datetime | None
 
 
 class EventRepository:
@@ -332,6 +340,145 @@ class EventRepository:
                     "INSERT INTO event_outbox (event_id) VALUES (?)",
                     (data["event_id"],),
                 )
+
+    def list_pending_outbox(
+        self,
+        *,
+        now: datetime,
+        limit: int,
+    ) -> list[PendingOutboxEvent]:
+        if limit < 1:
+            return []
+        timestamp = now.astimezone(UTC).isoformat()
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    events.*,
+                    event_outbox.attempt_count AS outbox_attempt_count,
+                    event_outbox.next_attempt_at AS outbox_next_attempt_at
+                FROM event_outbox
+                JOIN events
+                  ON events.event_id = event_outbox.event_id
+                WHERE event_outbox.status = 'pending'
+                  AND (
+                      event_outbox.next_attempt_at IS NULL
+                      OR julianday(event_outbox.next_attempt_at) <= julianday(?)
+                  )
+                ORDER BY event_outbox.created_at, event_outbox.event_id
+                LIMIT ?
+                """,
+                (timestamp, min(limit, 100)),
+            ).fetchall()
+
+        pending: list[PendingOutboxEvent] = []
+        for row in rows:
+            next_attempt_at = (
+                datetime.fromisoformat(str(row["outbox_next_attempt_at"]))
+                if row["outbox_next_attempt_at"] is not None
+                else None
+            )
+            pending.append(
+                PendingOutboxEvent(
+                    event=SecurityEvent(
+                        event_id=row["event_id"],
+                        timestamp=row["timestamp"],
+                        agent_id=row["agent_id"],
+                        hostname=row["hostname"],
+                        source=row["source"],
+                        category=row["category"],
+                        event_type=row["event_type"],
+                        severity=row["severity"],
+                        description=row["description"],
+                        evidence=json.loads(row["evidence_json"]),
+                    ),
+                    attempt_count=int(row["outbox_attempt_count"]),
+                    next_attempt_at=next_attempt_at,
+                )
+            )
+        return pending
+
+    def mark_outbox_acknowledged(
+        self,
+        event_ids: Iterable[str],
+        *,
+        acknowledged_at: datetime,
+    ) -> int:
+        normalized = tuple(dict.fromkeys(event_ids))
+        if not normalized:
+            return 0
+        placeholders = ", ".join("?" for _ in normalized)
+        timestamp = acknowledged_at.astimezone(UTC).isoformat()
+        with self._connection() as connection:
+            cursor = connection.execute(
+                f"""
+                UPDATE event_outbox
+                SET status = 'acknowledged',
+                    next_attempt_at = NULL,
+                    last_error = NULL,
+                    acknowledged_at = ?
+                WHERE status = 'pending'
+                  AND event_id IN ({placeholders})
+                """,
+                (timestamp, *normalized),
+            )
+        return cursor.rowcount
+
+    def record_outbox_failure(
+        self,
+        event_id: str,
+        *,
+        error: str,
+        next_attempt_at: datetime | None,
+        permanently_failed: bool = False,
+    ) -> bool:
+        sanitized_error = " ".join(error.split())[:512]
+        next_timestamp = (
+            next_attempt_at.astimezone(UTC).isoformat()
+            if next_attempt_at is not None and not permanently_failed
+            else None
+        )
+        status = "permanently_failed" if permanently_failed else "pending"
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE event_outbox
+                SET status = ?,
+                    attempt_count = attempt_count + 1,
+                    next_attempt_at = ?,
+                    last_error = ?,
+                    acknowledged_at = NULL
+                WHERE event_id = ?
+                  AND status = 'pending'
+                """,
+                (status, next_timestamp, sanitized_error, event_id),
+            )
+        return cursor.rowcount == 1
+
+    def defer_pending_outbox(
+        self,
+        *,
+        next_attempt_at: datetime,
+        error: str,
+    ) -> int:
+        sanitized_error = " ".join(error.split())[:512]
+        next_timestamp = next_attempt_at.astimezone(UTC).isoformat()
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE event_outbox
+                SET next_attempt_at = CASE
+                        WHEN next_attempt_at IS NULL
+                          OR julianday(next_attempt_at) < julianday(?)
+                        THEN ?
+                        ELSE next_attempt_at
+                    END,
+                    last_error = ?
+                WHERE status = 'pending'
+                """,
+                (next_timestamp, next_timestamp, sanitized_error),
+            )
+        return cursor.rowcount
 
     def create_response_block(
         self,
