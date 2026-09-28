@@ -13,6 +13,7 @@ def test_emit_persists_event_in_sqlite_and_jsonl(
         interval=1,
         state_dir=tmp_path / "state",
         log_dir=tmp_path / "logs",
+        identity_file=tmp_path / "agent-identity.json",
     )
 
     agent = ContinuousAgent(
@@ -56,6 +57,7 @@ def test_emit_preserves_explicit_timestamp(
         interval=1,
         state_dir=tmp_path / "state",
         log_dir=tmp_path / "logs",
+        identity_file=tmp_path / "agent-identity.json",
     )
 
     agent = ContinuousAgent(
@@ -100,6 +102,7 @@ def test_emit_returns_persisted_security_event(
         interval=1,
         state_dir=tmp_path / "state",
         log_dir=tmp_path / "logs",
+        identity_file=tmp_path / "agent-identity.json",
     )
 
     agent = ContinuousAgent(
@@ -134,6 +137,7 @@ def test_emit_preserves_explicit_event_id(
         interval=1,
         state_dir=tmp_path / "state",
         log_dir=tmp_path / "logs",
+        identity_file=tmp_path / "agent-identity.json",
     )
 
     agent = ContinuousAgent(
