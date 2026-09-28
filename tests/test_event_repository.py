@@ -37,7 +37,7 @@ def test_initializes_database(tmp_path: Path) -> None:
 
     assert repo.database_path.exists()
     assert repo.count() == 0
-    assert repo.schema_version() == 2
+    assert repo.schema_version() == 3
 
 
 def test_persists_event(tmp_path: Path) -> None:
@@ -225,7 +225,7 @@ def test_initialize_is_idempotent(tmp_path: Path) -> None:
     repo.initialize()
     repo.initialize()
 
-    assert repo.schema_version() == 2
+    assert repo.schema_version() == 3
     assert repo.count() == 1
 
 
@@ -286,7 +286,7 @@ def test_migrates_existing_v0_database_without_losing_events(
     repo = EventRepository(database_path)
     repo.initialize()
 
-    assert repo.schema_version() == 2
+    assert repo.schema_version() == 3
     assert repo.count() == 1
 
     events = repo.list_events()
@@ -301,7 +301,7 @@ def test_rejects_database_from_future_schema(
     database_path = tmp_path / "auditoria.db"
 
     with sqlite3.connect(database_path) as connection:
-        connection.execute("PRAGMA user_version = 3")
+        connection.execute("PRAGMA user_version = 4")
 
     repo = EventRepository(database_path)
 
@@ -422,7 +422,7 @@ def test_migrates_v1_database_to_v2_without_losing_events(
     repo = EventRepository(database_path)
     repo.initialize()
 
-    assert repo.schema_version() == 2
+    assert repo.schema_version() == 3
     assert repo.count() == 1
 
     events = repo.list_events()
@@ -471,6 +471,137 @@ def test_migrates_v1_database_to_v2_without_losing_events(
         assert "idx_response_blocks_expires_at" in indexes
         assert "idx_response_blocks_target" in indexes
         assert "idx_response_blocks_live_target" in indexes
+
+
+def test_migrates_v2_database_to_v3_without_assigning_legacy_agent(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "auditoria.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.row_factory = sqlite3.Row
+        EventRepository._migrate_to_v1(connection)
+        EventRepository._migrate_to_v2(connection)
+        connection.execute(
+            """
+            INSERT INTO events (
+                event_id, timestamp, hostname, source, category,
+                event_type, severity, description, evidence_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "legacy-v2-event",
+                "2026-09-26T10:00:00+00:00",
+                "shared-hostname",
+                "continuous-agent",
+                "detection",
+                "SSH_BRUTE_FORCE_ATTEMPT",
+                "high",
+                "Fila histórica exacta",
+                '{"attempts": 12}',
+            ),
+        )
+        connection.execute("PRAGMA user_version = 2")
+
+    repo = EventRepository(database_path)
+    repo.initialize()
+    repo.initialize()
+
+    with sqlite3.connect(database_path) as connection:
+        row = connection.execute(
+            """
+            SELECT event_id, hostname, description, evidence_json, agent_id
+            FROM events
+            """
+        ).fetchone()
+        outbox_count = connection.execute(
+            "SELECT COUNT(*) FROM event_outbox"
+        ).fetchone()[0]
+        indexes = {
+            item[1] for item in connection.execute("PRAGMA index_list(events)")
+        }
+
+    assert repo.schema_version() == 3
+    assert row == (
+        "legacy-v2-event",
+        "shared-hostname",
+        "Fila histórica exacta",
+        '{"attempts": 12}',
+        None,
+    )
+    assert outbox_count == 0
+    assert "idx_events_agent_timestamp" in indexes
+
+
+def test_event_and_outbox_are_persisted_atomically(tmp_path: Path) -> None:
+    repo = repository(tmp_path)
+    event = make_event()
+    event.agent_id = "agt_enrolled"
+
+    repo.add(event, enqueue_for_sync=True)
+
+    with sqlite3.connect(repo.database_path) as connection:
+        stored = connection.execute(
+            "SELECT agent_id FROM events WHERE event_id = ?",
+            (str(event.event_id),),
+        ).fetchone()
+        outbox = connection.execute(
+            """
+            SELECT status, attempt_count, next_attempt_at, last_error,
+                   acknowledged_at
+            FROM event_outbox
+            WHERE event_id = ?
+            """,
+            (str(event.event_id),),
+        ).fetchone()
+
+    assert stored == ("agt_enrolled",)
+    assert outbox == ("pending", 0, None, None, None)
+
+
+def test_outbox_failure_rolls_back_event_persistence(tmp_path: Path) -> None:
+    repo = repository(tmp_path)
+    with sqlite3.connect(repo.database_path) as connection:
+        connection.execute(
+            """
+            CREATE TRIGGER reject_outbox
+            BEFORE INSERT ON event_outbox
+            BEGIN
+                SELECT RAISE(ABORT, 'simulated outbox failure');
+            END
+            """
+        )
+
+    event = make_event()
+    event.agent_id = "agt_enrolled"
+
+    with pytest.raises(sqlite3.IntegrityError, match="simulated outbox failure"):
+        repo.add(event, enqueue_for_sync=True)
+
+    with sqlite3.connect(repo.database_path) as connection:
+        event_count = connection.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+        outbox_count = connection.execute(
+            "SELECT COUNT(*) FROM event_outbox"
+        ).fetchone()[0]
+
+    assert event_count == 0
+    assert outbox_count == 0
+
+
+def test_legacy_event_is_persisted_without_outbox(tmp_path: Path) -> None:
+    repo = repository(tmp_path)
+
+    repo.add(make_event())
+
+    with sqlite3.connect(repo.database_path) as connection:
+        event_row = connection.execute(
+            "SELECT agent_id FROM events"
+        ).fetchone()
+        outbox_count = connection.execute(
+            "SELECT COUNT(*) FROM event_outbox"
+        ).fetchone()[0]
+
+    assert event_row == (None,)
+    assert outbox_count == 0
 
 
 def test_v2_prevents_duplicate_live_blocks(

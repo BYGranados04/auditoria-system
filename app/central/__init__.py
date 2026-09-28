@@ -1,0 +1,2 @@
+"""Central event persistence foundations."""
+

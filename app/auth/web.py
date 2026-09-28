@@ -106,6 +106,14 @@ class AuthManager:
             return None
         return self.repository.get_owned_agent_hostnames(session.user_id)
 
+    def get_allowed_agent_ids(
+        self,
+        session: AuthenticatedSession,
+    ) -> tuple[str, ...] | None:
+        if session.role == "superadmin":
+            return None
+        return self.repository.owned_agent_ids(session.user_id)
+
     def resolve_hostname_scope(
         self,
         session: AuthenticatedSession,

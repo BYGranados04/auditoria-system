@@ -544,6 +544,20 @@ class AuthRepository:
             ).fetchall()
         return tuple(str(row["hostname"]) for row in rows)
 
+    def owned_agent_ids(self, user_id: int) -> tuple[str, ...]:
+        self.initialize()
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT agent_id
+                FROM agents
+                WHERE owner_user_id = ?
+                ORDER BY agent_id
+                """,
+                (user_id,),
+            ).fetchall()
+        return tuple(str(row["agent_id"]) for row in rows)
+
     def replace_user_hostnames(
         self,
         user_id: int,
@@ -845,6 +859,28 @@ class AuthRepository:
             parameters.append(owner_user_id)
         with self._connection() as connection:
             row = connection.execute(query, parameters).fetchone()
+        return self._public_agent(row) if row is not None else None
+
+    def authenticate_agent_credential(
+        self,
+        credential: str,
+    ) -> dict[str, object] | None:
+        self.initialize()
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT agents.*
+                FROM agent_credentials
+                JOIN agents
+                  ON agents.agent_id = agent_credentials.agent_id
+                JOIN users
+                  ON users.id = agents.owner_user_id
+                WHERE agent_credentials.credential_digest = ?
+                  AND agent_credentials.revoked_at IS NULL
+                  AND users.active = 1
+                """,
+                (_digest_token(credential),),
+            ).fetchone()
         return self._public_agent(row) if row is not None else None
 
     def record_agent_heartbeat(

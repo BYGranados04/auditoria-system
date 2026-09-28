@@ -12,7 +12,7 @@ from app.core.events import SecurityEvent
 
 
 class EventRepository:
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
 
     def __init__(
         self,
@@ -101,6 +101,7 @@ class EventRepository:
             migrations = {
                 1: self._migrate_to_v1,
                 2: self._migrate_to_v2,
+                3: self._migrate_to_v3,
             }
 
             while current_version < self.SCHEMA_VERSION:
@@ -240,8 +241,57 @@ class EventRepository:
             """
         )
 
-    def add(self, event: SecurityEvent) -> None:
+    @staticmethod
+    def _migrate_to_v3(
+        connection: sqlite3.Connection,
+    ) -> None:
+        columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(events)").fetchall()
+        }
+        if "agent_id" not in columns:
+            connection.execute("ALTER TABLE events ADD COLUMN agent_id TEXT")
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_events_agent_timestamp "
+            "ON events (agent_id, timestamp)"
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS event_outbox (
+                event_id TEXT PRIMARY KEY
+                    REFERENCES events(event_id) ON DELETE CASCADE,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (
+                        status IN (
+                            'pending',
+                            'acknowledged',
+                            'permanently_failed'
+                        )
+                    ),
+                attempt_count INTEGER NOT NULL DEFAULT 0
+                    CHECK (attempt_count >= 0),
+                next_attempt_at TEXT,
+                last_error TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                acknowledged_at TEXT
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_event_outbox_pending "
+            "ON event_outbox (status, next_attempt_at, created_at)"
+        )
+
+    def add(
+        self,
+        event: SecurityEvent,
+        *,
+        enqueue_for_sync: bool = False,
+    ) -> None:
         data = event.model_dump(mode="json")
+
+        if enqueue_for_sync and event.agent_id is None:
+            raise ValueError("Un evento sin agent_id no puede agregarse al outbox.")
 
         with self._connection() as connection:
             connection.execute(
@@ -255,9 +305,10 @@ class EventRepository:
                     event_type,
                     severity,
                     description,
-                    evidence_json
+                    evidence_json,
+                    agent_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     data["event_id"],
@@ -273,8 +324,14 @@ class EventRepository:
                         ensure_ascii=False,
                         sort_keys=True,
                     ),
+                    data["agent_id"],
                 ),
             )
+            if enqueue_for_sync:
+                connection.execute(
+                    "INSERT INTO event_outbox (event_id) VALUES (?)",
+                    (data["event_id"],),
+                )
 
     def create_response_block(
         self,
