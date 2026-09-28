@@ -30,11 +30,6 @@ Severity = Literal[
     "critical",
 ]
 
-ResponseEventType = Literal[
-    "RESPONSE_DECISION",
-    "RESPONSE_EXECUTION",
-]
-
 DASHBOARD_DIRECTORY = Path(__file__).with_name("dashboard")
 
 
@@ -82,6 +77,7 @@ class StatusResponse(BaseModel):
 class EventResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    agent_id: str
     event_id: str
     timestamp: datetime
     hostname: str
@@ -329,6 +325,7 @@ def create_app(
         tags=["events"],
     )
     def list_events(
+        agent_id: str | None = None,
         severity: Severity | None = None,
         event_type: str | None = None,
         hostname: str | None = None,
@@ -359,22 +356,14 @@ def create_app(
                 detail=("since no puede ser posterior a until."),
             )
 
-        if not resolved_settings.database_file.is_file():
-            raise HTTPException(
-                status_code=503,
-                detail="Base de datos no disponible.",
-            )
-
         try:
-            allowed_hostnames = auth_manager.resolve_hostname_scope(
-                session,
-                hostname,
-            )
-            rows = resolved_repository.list_events(
+            allowed_agent_ids = auth_manager.resolve_agent_scope(session, agent_id)
+            rows = resolved_central_repository.list_events(
+                agent_ids=allowed_agent_ids,
+                agent_id=agent_id,
                 severity=severity,
                 event_type=event_type,
                 hostname=hostname,
-                hostnames=allowed_hostnames,
                 category=category,
                 since=since,
                 until=until,
@@ -388,8 +377,9 @@ def create_app(
 
         return [
             EventResponse(
+                agent_id=row["agent_id"],
                 event_id=row["event_id"],
-                timestamp=row["timestamp"],
+                timestamp=row["occurred_at"],
                 hostname=row["hostname"],
                 source=row["source"],
                 category=row["category"],
@@ -407,6 +397,7 @@ def create_app(
         tags=["detections"],
     )
     def list_detections(
+        agent_id: str | None = None,
         severity: Severity | None = None,
         event_type: str | None = None,
         hostname: str | None = None,
@@ -436,22 +427,14 @@ def create_app(
                 detail=("since no puede ser posterior a until."),
             )
 
-        if not resolved_settings.database_file.is_file():
-            raise HTTPException(
-                status_code=503,
-                detail="Base de datos no disponible.",
-            )
-
         try:
-            allowed_hostnames = auth_manager.resolve_hostname_scope(
-                session,
-                hostname,
-            )
-            rows = resolved_repository.list_events(
+            allowed_agent_ids = auth_manager.resolve_agent_scope(session, agent_id)
+            rows = resolved_central_repository.list_events(
+                agent_ids=allowed_agent_ids,
+                agent_id=agent_id,
                 severity=severity,
                 event_type=event_type,
                 hostname=hostname,
-                hostnames=allowed_hostnames,
                 category="detection",
                 since=since,
                 until=until,
@@ -465,8 +448,9 @@ def create_app(
 
         return [
             EventResponse(
+                agent_id=row["agent_id"],
                 event_id=row["event_id"],
-                timestamp=row["timestamp"],
+                timestamp=row["occurred_at"],
                 hostname=row["hostname"],
                 source=row["source"],
                 category=row["category"],
@@ -484,7 +468,13 @@ def create_app(
         tags=["responses"],
     )
     def list_responses(
-        event_type: ResponseEventType | None = None,
+        agent_id: str | None = None,
+        event_type: str | None = Query(
+            default=None,
+            min_length=1,
+            max_length=128,
+            pattern=r"^[A-Z0-9_]+$",
+        ),
         hostname: str | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
@@ -512,40 +502,18 @@ def create_app(
                 detail=("since no puede ser posterior a until."),
             )
 
-        if not resolved_settings.database_file.is_file():
-            raise HTTPException(
-                status_code=503,
-                detail="Base de datos no disponible.",
-            )
-
         try:
-            allowed_hostnames = auth_manager.resolve_hostname_scope(
-                session,
-                hostname,
+            allowed_agent_ids = auth_manager.resolve_agent_scope(session, agent_id)
+            rows = resolved_central_repository.list_events(
+                agent_ids=allowed_agent_ids,
+                agent_id=agent_id,
+                event_type=event_type,
+                hostname=hostname,
+                category="response",
+                since=since,
+                until=until,
+                limit=limit,
             )
-            if event_type is None:
-                rows = resolved_repository.list_events(
-                    event_types=(
-                        "RESPONSE_DECISION",
-                        "RESPONSE_EXECUTION",
-                    ),
-                    hostname=hostname,
-                    hostnames=allowed_hostnames,
-                    category="response",
-                    since=since,
-                    until=until,
-                    limit=limit,
-                )
-            else:
-                rows = resolved_repository.list_events(
-                    event_type=event_type,
-                    hostname=hostname,
-                    hostnames=allowed_hostnames,
-                    category="response",
-                    since=since,
-                    until=until,
-                    limit=limit,
-                )
         except sqlite3.Error as exc:
             raise HTTPException(
                 status_code=503,
@@ -554,8 +522,9 @@ def create_app(
 
         return [
             EventResponse(
+                agent_id=row["agent_id"],
                 event_id=row["event_id"],
-                timestamp=row["timestamp"],
+                timestamp=row["occurred_at"],
                 hostname=row["hostname"],
                 source=row["source"],
                 category=row["category"],

@@ -4,6 +4,8 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app.api.main import create_app
+from app.central.config import CentralSettings
+from app.central.repository import CentralEventRepository
 from app.core.config import AgentSettings
 from app.core.events import SecurityEvent
 from app.storage.event_repository import EventRepository
@@ -12,7 +14,7 @@ from tests.api_test_helpers import create_test_auth_repository, login_test_user
 
 def build_client(
     tmp_path: Path,
-) -> tuple[TestClient, EventRepository]:
+) -> tuple[TestClient, CentralEventRepository]:
     settings = AgentSettings(
         interval=1,
         state_dir=tmp_path / "state",
@@ -24,13 +26,19 @@ def build_client(
         exist_ok=True,
     )
 
-    repository = EventRepository(settings.database_file)
-    repository.initialize()
+    local_repository = EventRepository(settings.database_file)
+    local_repository.initialize()
+    central_settings = CentralSettings(
+        database_file=tmp_path / "central" / "central.db"
+    )
+    repository = CentralEventRepository(central_settings.database_file)
 
     application = create_app(
         settings=settings,
-        repository=repository,
+        repository=local_repository,
         auth_repository=create_test_auth_repository(tmp_path),
+        central_settings=central_settings,
+        central_repository=repository,
     )
 
     client = TestClient(application)
@@ -43,7 +51,7 @@ def build_client(
 
 
 def add_event(
-    repository: EventRepository,
+    repository: CentralEventRepository,
     *,
     timestamp: datetime,
     severity: str,
@@ -64,7 +72,7 @@ def add_event(
         },
     )
 
-    repository.add(event)
+    repository.add_event(agent_id="agt_test", event=event)
 
     return event
 

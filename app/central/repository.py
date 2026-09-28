@@ -85,6 +85,18 @@ class CentralEventRepository:
         finally:
             connection.close()
 
+    @contextmanager
+    def _read_connection(self) -> Iterator[sqlite3.Connection]:
+        uri = f"{self.database_path.resolve().as_uri()}?mode=ro"
+        connection = sqlite3.connect(uri, uri=True, timeout=5)
+        connection.row_factory = sqlite3.Row
+        try:
+            connection.execute("PRAGMA query_only = ON")
+            connection.execute("PRAGMA busy_timeout = 5000")
+            yield connection
+        finally:
+            connection.close()
+
     def initialize(self) -> None:
         with self._connection() as connection:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
@@ -265,21 +277,63 @@ class CentralEventRepository:
     def list_events(
         self,
         *,
-        agent_id: str,
+        agent_ids: tuple[str, ...] | None = None,
+        agent_id: str | None = None,
+        category: str | None = None,
+        severity: str | None = None,
+        event_type: str | None = None,
+        event_types: tuple[str, ...] | None = None,
+        hostname: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
-        if limit < 1:
+        if (
+            limit < 1
+            or agent_ids == ()
+            or event_types == ()
+            or not self.database_path.is_file()
+        ):
             return []
-        self.initialize()
-        with self._connection() as connection:
+        clauses: list[str] = []
+        parameters: list[object] = []
+        if agent_ids is not None:
+            placeholders = ", ".join("?" for _ in agent_ids)
+            clauses.append(f"agent_id IN ({placeholders})")
+            parameters.extend(agent_ids)
+        if agent_id is not None:
+            clauses.append("agent_id = ?")
+            parameters.append(agent_id)
+        if event_types is not None:
+            placeholders = ", ".join("?" for _ in event_types)
+            clauses.append(f"event_type IN ({placeholders})")
+            parameters.extend(event_types)
+        for column, value in (
+            ("category", category),
+            ("severity", severity),
+            ("event_type", event_type),
+            ("hostname", hostname),
+        ):
+            if value is not None:
+                clauses.append(f"{column} = ?")
+                parameters.append(value)
+        if since is not None:
+            clauses.append("occurred_at >= ?")
+            parameters.append(_utc_timestamp(since))
+        if until is not None:
+            clauses.append("occurred_at <= ?")
+            parameters.append(_utc_timestamp(until))
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        parameters.append(limit)
+        with self._read_connection() as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT *
                 FROM events
-                WHERE agent_id = ?
+                {where}
                 ORDER BY occurred_at DESC, id DESC
                 LIMIT ?
                 """,
-                (agent_id, limit),
+                parameters,
             ).fetchall()
         return [self._record(row) for row in rows]

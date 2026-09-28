@@ -114,6 +114,20 @@ class AuthManager:
             return None
         return self.repository.owned_agent_ids(session.user_id)
 
+    def resolve_agent_scope(
+        self,
+        session: AuthenticatedSession,
+        requested_agent_id: str | None,
+    ) -> tuple[str, ...] | None:
+        allowed = self.get_allowed_agent_ids(session)
+        if requested_agent_id is None:
+            return allowed
+        if allowed is not None and requested_agent_id not in allowed:
+            raise HTTPException(status_code=404, detail="Servidor no encontrado.")
+        if self.repository.get_agent(requested_agent_id) is None:
+            raise HTTPException(status_code=404, detail="Servidor no encontrado.")
+        return (requested_agent_id,)
+
     def resolve_hostname_scope(
         self,
         session: AuthenticatedSession,
