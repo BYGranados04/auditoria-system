@@ -61,6 +61,7 @@ def test_run_once_collects_new_ssh_event(
         interval=1,
         state_dir=tmp_path / "state",
         log_dir=tmp_path / "logs",
+        identity_file=tmp_path / "agent-identity.json",
     )
 
     agent = ContinuousAgent(
@@ -207,6 +208,7 @@ def test_ssh_events_are_correlated_after_persistence(
         interval=1,
         state_dir=tmp_path / "state",
         log_dir=tmp_path / "logs",
+        identity_file=tmp_path / "agent-identity.json",
     )
 
     agent = ContinuousAgent(
@@ -325,6 +327,7 @@ def test_response_decision_preserves_loopback_safeguard(
         log_dir=tmp_path / "logs",
         response_mode="automatic",
         allow_temporary_ip_block=True,
+        identity_file=tmp_path / "agent-identity.json",
     )
 
     agent = ContinuousAgent(
@@ -387,6 +390,7 @@ def test_automatic_response_reaches_dry_run(
         response_mode="automatic",
         allow_temporary_ip_block=True,
         temporary_block_seconds=900,
+        identity_file=tmp_path / "agent-identity.json",
     )
 
     agent = ContinuousAgent(

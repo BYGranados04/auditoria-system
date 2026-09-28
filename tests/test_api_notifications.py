@@ -15,7 +15,8 @@ from tests.api_test_helpers import TEST_PASSWORD, TEST_SCRYPT
 
 def build_client(tmp_path: Path, *, populate_notifications: bool = True):
     settings = AgentSettings(
-        interval=1, state_dir=tmp_path / "state", log_dir=tmp_path / "logs"
+        interval=1, state_dir=tmp_path / "state", log_dir=tmp_path / "logs",
+        identity_file=tmp_path / "agent-identity.json",
     )
     settings.state_dir.mkdir(parents=True)
     auth = AuthRepository(tmp_path / "auth.db", scrypt_parameters=TEST_SCRYPT)
