@@ -17,19 +17,25 @@ const normalizedPath = window.location.pathname.replace(/\/+$/, "") || "/dashboa
 const currentModule = MODULES[normalizedPath] ?? MODULES["/dashboard"];
 let refreshInProgress = false;
 let refreshTimerId = null;
+let refreshController = null;
+let refreshGeneration = 0;
 let authContext = null;
-let knownHosts = [];
+let knownAgents = [];
+let selectedAgentId = null;
 
 const elements = {
   appShell: document.querySelector("#app-shell"),
   apiIndicator: document.querySelector("#api-indicator"),
   apiStatus: document.querySelector("#api-status"),
+  agentSelector: document.querySelector("#agent-selector"),
   automaticBlocking: document.querySelector("#automatic-blocking"),
   connectServerButton: document.querySelector("#connect-server-button"),
   copyRegistrationCommand: document.querySelector("#copy-registration-command"),
   createUserForm: document.querySelector("#create-user-form"),
   currentUser: document.querySelector("#current-user"),
   defenseApiStatus: document.querySelector("#status-api"),
+  statusPresence: document.querySelector("#status-presence"),
+  statusLastSeen: document.querySelector("#status-last-seen"),
   defenseHostname: document.querySelector("#status-hostname"),
   detectionsBody: document.querySelector("#detections-body"),
   detectionsCount: document.querySelector("#detections-count"),
@@ -39,6 +45,10 @@ const elements = {
   eventsFilters: document.querySelector("#events-filters"),
   globalAlert: document.querySelector("#global-alert"),
   hostname: document.querySelector("#hostname"),
+  fleetTotal: document.querySelector("#fleet-total"),
+  fleetOnline: document.querySelector("#fleet-online"),
+  fleetOffline: document.querySelector("#fleet-offline"),
+  fleetUnknown: document.querySelector("#fleet-unknown"),
   lastUpdated: document.querySelector("#last-updated"),
   logoutButton: document.querySelector("#logout-button"),
   mobileMenuToggle: document.querySelector("#mobile-menu-toggle"),
@@ -59,6 +69,7 @@ const elements = {
   responsesBody: document.querySelector("#responses-body"),
   responsesCount: document.querySelector("#responses-count"),
   responsesFilters: document.querySelector("#responses-filters"),
+  serverSelectorWrap: document.querySelector(".server-selector-wrap"),
   sidebar: document.querySelector("#sidebar"),
   sidebarBackdrop: document.querySelector("#sidebar-backdrop"),
   sidebarCollapse: document.querySelector("#sidebar-collapse"),
@@ -187,12 +198,37 @@ function displayValue(value, fallback = "—") {
 }
 
 function formatTimestamp(value) {
+  if (value === undefined || value === null || value === "") return "—";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return displayValue(value);
   return new Intl.DateTimeFormat("es-GT", {
     dateStyle: "short",
     timeStyle: "medium",
   }).format(date);
+}
+
+function formatRelativeTimestamp(value) {
+  if (!value) return "Nunca";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Desconocido";
+
+  const seconds = Math.max(0, Math.round((Date.now() - date.getTime()) / 1000));
+  if (seconds < 60) return `hace ${seconds} s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `hace ${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `hace ${hours} h`;
+  const days = Math.floor(hours / 24);
+  return `hace ${days} d`;
+}
+
+function serverCell(event) {
+  const wrapper = makeElement("div", "server-cell");
+  wrapper.append(
+    makeElement("span", "server-hostname", displayValue(event.hostname)),
+    makeElement("span", "server-agent-id", shortAgentId(event.agent_id)),
+  );
+  return wrapper;
 }
 
 function severityBadge(severity) {
@@ -219,6 +255,9 @@ function activateModule() {
   const pageTitle = currentModule.key === "servers" ? serverTitle : currentModule.title;
   document.title = `${pageTitle} | Auditoria System`;
   elements.serversTitle.textContent = serverTitle;
+  elements.serverSelectorWrap.hidden = ["notifications", "servers", "users"].includes(
+    currentModule.key,
+  );
   document.querySelectorAll("[data-view]").forEach((view) => {
     view.hidden = view.dataset.view !== currentModule.key;
   });
@@ -247,48 +286,88 @@ async function loadAuthContext() {
     window.location.assign("/login");
     throw new Error("Authentication required");
   }
+
   authContext = await response.json();
-  if (authContext.role === "superadmin") {
-    try {
-      const agents = await fetchJson("/agents");
-      knownHosts = [...new Set(agents.map((agent) => agent.hostname))].sort();
-    } catch (_error) {
-      knownHosts = [];
-    }
-  } else {
-    knownHosts = Array.isArray(authContext.hostnames) ? authContext.hostnames : [];
-  }
-  const scope = authContext.role === "superadmin"
-    ? "Todos los servidores"
-    : `${knownHosts.length} ${knownHosts.length === 1 ? "servidor" : "servidores"}`;
+  const scope = authContext.role === "superadmin" ? "Todos los servidores" : "Servidores asignados";
   elements.currentUser.textContent = `${authContext.username} · ${authContext.role} · ${scope}`;
-  populateHostnameControls();
-}
 
-function appendHostOptions(select, selected = []) {
-  const selectedHosts = new Set(selected);
-  knownHosts.forEach((hostname) => {
-    const option = makeElement("option", "", hostname);
-    option.value = hostname;
-    option.selected = selectedHosts.has(hostname);
-    select.append(option);
-  });
-}
-
-function populateHostnameControls() {
-  document.querySelectorAll("[data-hostname-filter]").forEach((select) => {
-    const firstOption = select.querySelector("option");
-    select.replaceChildren(firstOption);
-    appendHostOptions(select);
-  });
-}
-
-function populateFiltersFromLocation() {
-  const form = elements[`${currentModule.key}Filters`];
-  if (!form) return;
   const params = new URLSearchParams(window.location.search);
-  form.querySelectorAll("[name]").forEach((control) => {
-    control.value = params.get(control.name) ?? "";
+  selectedAgentId = params.get("agent_id") || null;
+}
+
+function shortAgentId(agentId) {
+  const value = displayValue(agentId, "");
+  if (!value) return "sin-id";
+  return value.length > 14 ? `${value.slice(0, 12)}…` : value;
+}
+
+function presenceLabel(presence) {
+  const labels = {
+    online: "En línea",
+    offline: "Sin conexión",
+    unknown: "Desconocido",
+  };
+  return labels[presence] ?? "Desconocido";
+}
+
+function presenceClass(presence) {
+  if (presence === "online") return "agent-online";
+  if (presence === "offline") return "agent-offline";
+  return "agent-unknown";
+}
+
+function selectedAgent() {
+  if (!selectedAgentId) return null;
+  return knownAgents.find((agent) => agent.agent_id === selectedAgentId) ?? null;
+}
+
+function agentDisplayName(agent) {
+  if (!agent) return "Todos los servidores";
+  return `${displayValue(agent.hostname)} · ${shortAgentId(agent.agent_id)}`;
+}
+
+function renderAgentSelector() {
+  const firstOption = makeElement("option", "", "Todos los servidores");
+  firstOption.value = "";
+  elements.agentSelector.replaceChildren(firstOption);
+
+  knownAgents.forEach((agent) => {
+    const option = makeElement(
+      "option",
+      "",
+      `${displayValue(agent.hostname)} · ${shortAgentId(agent.agent_id)} · ${presenceLabel(agent.presence)}`,
+    );
+    option.value = agent.agent_id;
+    option.selected = agent.agent_id === selectedAgentId;
+    elements.agentSelector.append(option);
+  });
+
+  elements.agentSelector.value = selectedAgentId ?? "";
+  syncAgentNavigationLinks();
+  const selected = selectedAgent();
+  elements.hostname.textContent = selected ? agentDisplayName(selected) : "Todos los servidores";
+}
+
+function updateAgentQueryInLocation() {
+  const params = new URLSearchParams(window.location.search);
+  if (selectedAgentId) params.set("agent_id", selectedAgentId);
+  else params.delete("agent_id");
+
+  const query = params.toString();
+  window.history.replaceState(null, "", query ? `${normalizedPath}?${query}` : normalizedPath);
+}
+
+function syncAgentNavigationLinks() {
+  document.querySelectorAll("a[href^='/dashboard']").forEach((link) => {
+    const url = new URL(link.getAttribute("href"), window.location.origin);
+    const targetPath = url.pathname.replace(/\/+$/, "") || "/dashboard";
+    const supportsAgent = ["/dashboard", "/dashboard/events", "/dashboard/detections", "/dashboard/responses"]
+      .includes(targetPath);
+
+    if (supportsAgent && selectedAgentId) url.searchParams.set("agent_id", selectedAgentId);
+    else url.searchParams.delete("agent_id");
+
+    link.setAttribute("href", `${url.pathname}${url.search}`);
   });
 }
 
@@ -298,6 +377,9 @@ function filterParams(form, limit) {
     const normalized = String(value).trim();
     if (normalized) params.set(key, normalized);
   });
+  if (selectedAgentId && currentModule.key !== "notifications") {
+    params.set("agent_id", selectedAgentId);
+  }
   if (limit) params.set("limit", String(limit));
   return params;
 }
@@ -305,6 +387,15 @@ function filterParams(form, limit) {
 function endpointWithFilters(path, form, limit) {
   const query = filterParams(form, limit).toString();
   return query ? `${path}?${query}` : path;
+}
+
+function populateFiltersFromLocation() {
+  const form = elements[`${currentModule.key}Filters`];
+  if (!form) return;
+  const params = new URLSearchParams(window.location.search);
+  form.querySelectorAll("[name]").forEach((control) => {
+    control.value = params.get(control.name) ?? "";
+  });
 }
 
 function setApiState(state, message) {
@@ -323,31 +414,103 @@ function renderPill(container, text, style = "neutral") {
   container.replaceChildren(makeElement("span", `value-pill is-${style}`, text));
 }
 
+function renderFleetSummary(agents) {
+  const counts = { online: 0, offline: 0, unknown: 0 };
+  agents.forEach((agent) => {
+    const presence = ["online", "offline", "unknown"].includes(agent.presence)
+      ? agent.presence
+      : "unknown";
+    counts[presence] += 1;
+  });
+
+  elements.fleetTotal.textContent = String(agents.length);
+  elements.fleetOnline.textContent = String(counts.online);
+  elements.fleetOffline.textContent = String(counts.offline);
+  elements.fleetUnknown.textContent = String(counts.unknown);
+  [elements.fleetTotal, elements.fleetOnline, elements.fleetOffline, elements.fleetUnknown]
+    .forEach((element) => element.classList.remove("loading-value"));
+}
+
+function renderFleetError() {
+  [elements.fleetTotal, elements.fleetOnline, elements.fleetOffline, elements.fleetUnknown]
+    .forEach((element) => {
+      element.textContent = "—";
+      element.classList.remove("loading-value");
+    });
+}
+
+function updateCurrentUserScope() {
+  const count = knownAgents.length;
+  const scope = authContext.role === "superadmin"
+    ? `${count} ${count === 1 ? "servidor" : "servidores"}`
+    : `${count} ${count === 1 ? "servidor asignado" : "servidores asignados"}`;
+  elements.currentUser.textContent = `${authContext.username} · ${authContext.role} · ${scope}`;
+}
+
 function renderStatus(status) {
-  const hostname = displayValue(status.hostname);
-  elements.hostname.textContent = hostname;
+  const selected = selectedAgent();
+  const hostname = selected
+    ? displayValue(status.hostname, selected.hostname)
+    : "Todos los servidores";
+
+  elements.hostname.textContent = selected ? agentDisplayName(selected) : "Todos los servidores";
   elements.defenseHostname.textContent = hostname;
   setMetric("total", status.total_events);
   setMetric("critical", status.by_severity?.critical ?? 0);
   setMetric("high", status.by_severity?.high ?? 0);
   setMetric("medium", status.by_severity?.medium ?? 0);
-  setMetric("blocks", status.live_response_blocks);
+
+  const blocksMetric = document.querySelector("#metric-blocks");
+  if (status.live_response_blocks === null || status.live_response_blocks === undefined) {
+    blocksMetric.textContent = "No disp.";
+  } else {
+    blocksMetric.textContent = displayValue(status.live_response_blocks, "0");
+  }
+  blocksMetric.classList.remove("loading-value");
+
+  if (selected) {
+    renderPill(
+      elements.statusPresence,
+      presenceLabel(status.presence ?? selected.presence),
+      `presence-${status.presence ?? selected.presence ?? "unknown"}`,
+    );
+    elements.statusLastSeen.textContent = formatRelativeTimestamp(
+      status.last_seen_at ?? selected.last_seen_at,
+    );
+    elements.statusLastSeen.title = formatTimestamp(status.last_seen_at ?? selected.last_seen_at);
+  } else {
+    renderPill(elements.statusPresence, "Resumen de flota");
+    elements.statusLastSeen.textContent = "Consulta por servidor";
+    elements.statusLastSeen.removeAttribute("title");
+  }
 
   const modeLabels = {
     audit_only: "Solo auditoría",
     assisted: "Asistido",
     automatic: "Automático",
   };
-  renderPill(
-    elements.responseMode,
-    modeLabels[status.response_mode] ?? displayValue(status.response_mode),
-    status.response_mode === "automatic" ? "warning" : "neutral",
-  );
-  renderPill(
-    elements.automaticBlocking,
-    status.automatic_blocking_enabled ? "Habilitado" : "Deshabilitado",
-    status.automatic_blocking_enabled ? "warning" : "neutral",
-  );
+  if (status.response_mode === null || status.response_mode === undefined) {
+    renderPill(elements.responseMode, "No disponible centralmente");
+  } else {
+    renderPill(
+      elements.responseMode,
+      modeLabels[status.response_mode] ?? displayValue(status.response_mode),
+      status.response_mode === "automatic" ? "warning" : "neutral",
+    );
+  }
+
+  if (
+    status.automatic_blocking_enabled === null ||
+    status.automatic_blocking_enabled === undefined
+  ) {
+    renderPill(elements.automaticBlocking, "No disponible centralmente");
+  } else {
+    renderPill(
+      elements.automaticBlocking,
+      status.automatic_blocking_enabled ? "Habilitado" : "Deshabilitado",
+      status.automatic_blocking_enabled ? "warning" : "neutral",
+    );
+  }
 }
 
 function renderStatusError() {
@@ -356,8 +519,10 @@ function renderStatusError() {
     metric.textContent = "—";
     metric.classList.remove("loading-value");
   });
-  elements.hostname.textContent = "—";
+  elements.hostname.textContent = selectedAgent() ? agentDisplayName(selectedAgent()) : "Todos los servidores";
   elements.defenseHostname.textContent = "—";
+  renderPill(elements.statusPresence, "No disponible");
+  elements.statusLastSeen.textContent = "—";
   renderPill(elements.responseMode, "No disponible");
   renderPill(elements.automaticBlocking, "No disponible");
 }
@@ -371,15 +536,20 @@ function stateRow(columns, message, error = false) {
 }
 
 function renderEvents(events, body, compact = false) {
+  const columnCount = compact ? 5 : 6;
   if (events.length === 0) {
-    body.replaceChildren(stateRow(compact ? 4 : 5, "No hay eventos registrados."));
+    body.replaceChildren(stateRow(columnCount, "No hay eventos registrados."));
     return;
   }
+
   const rows = events.map((event) => {
     const row = document.createElement("tr");
+    const server = document.createElement("td");
+    server.append(serverCell(event));
     const severity = document.createElement("td");
     severity.append(severityBadge(event.severity));
     const cells = [
+      server,
       makeElement("td", "timestamp", formatTimestamp(event.timestamp)),
       severity,
     ];
@@ -396,15 +566,19 @@ function renderEvents(events, body, compact = false) {
 
 function renderDetections(detections, body) {
   if (detections.length === 0) {
-    body.replaceChildren(stateRow(5, "No hay detecciones registradas."));
+    body.replaceChildren(stateRow(6, "No hay detecciones registradas."));
     return;
   }
+
   const rows = detections.map((detection) => {
     const evidence = evidenceObject(detection);
     const row = document.createElement("tr");
+    const server = document.createElement("td");
+    server.append(serverCell(detection));
     const severity = document.createElement("td");
     severity.append(severityBadge(detection.severity));
     row.append(
+      server,
       severity,
       makeElement("td", "event-type", displayValue(detection.event_type)),
       makeElement("td", "monospace", displayValue(evidence.source_ip)),
@@ -418,13 +592,17 @@ function renderDetections(detections, body) {
 
 function renderResponses(responses) {
   if (responses.length === 0) {
-    elements.responsesBody.replaceChildren(stateRow(7, "No hay respuestas registradas."));
+    elements.responsesBody.replaceChildren(stateRow(8, "No hay respuestas registradas."));
     return;
   }
+
   const rows = responses.map((response) => {
     const evidence = evidenceObject(response);
     const row = document.createElement("tr");
+    const server = document.createElement("td");
+    server.append(serverCell(response));
     row.append(
+      server,
       makeElement("td", "timestamp", formatTimestamp(response.timestamp)),
       makeElement("td", "event-type", displayValue(response.event_type)),
       makeElement("td", "monospace", displayValue(evidence.target_ip)),
@@ -474,14 +652,25 @@ function renderAgents(agents) {
     );
     return;
   }
+
   const rows = agents.map((agent) => {
-    const status = agent.status === "online" ? "En línea" : "Sin conexión";
     const row = document.createElement("tr");
+    const presence = ["online", "offline", "unknown"].includes(agent.presence)
+      ? agent.presence
+      : "unknown";
+    const lastSeenCell = makeElement(
+      "td",
+      "timestamp",
+      formatRelativeTimestamp(agent.last_seen_at),
+    );
+    if (agent.last_seen_at) lastSeenCell.title = formatTimestamp(agent.last_seen_at);
+
+    row.dataset.agentId = agent.agent_id;
     row.append(
-      makeElement("td", "monospace", agent.agent_id),
-      makeElement("td", "monospace", agent.hostname),
-      makeElement("td", agent.status === "online" ? "agent-online" : "agent-offline", status),
-      makeElement("td", "timestamp", formatTimestamp(agent.last_seen_at)),
+      makeElement("td", "monospace", displayValue(agent.hostname)),
+      makeElement("td", presenceClass(presence), presenceLabel(presence)),
+      lastSeenCell,
+      makeElement("td", "monospace", shortAgentId(agent.agent_id)),
       makeElement("td", "timestamp", formatTimestamp(agent.registered_at)),
     );
     return row;
@@ -583,49 +772,62 @@ function renderUsers(users) {
   elements.usersBody.replaceChildren(...rows);
 }
 
-async function fetchJson(path) {
+async function fetchJson(path, signal) {
   const response = await fetch(path, {
     headers: { Accept: "application/json" },
     cache: "no-store",
+    signal,
   });
   if (response.status === 401) {
     window.location.assign("/login");
     throw new Error("Authentication required");
   }
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  if (!response.ok) {
+    const error = new Error(`HTTP ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
   return response.json();
 }
 
-function moduleRequests() {
+function appendAgentParam(path) {
+  if (!selectedAgentId) return path;
+  const separator = path.includes("?") ? "&" : "?";
+  return `${path}${separator}agent_id=${encodeURIComponent(selectedAgentId)}`;
+}
+
+function moduleRequests(signal) {
   const requests = [
-    ["health", fetchJson("/health")],
-    ["status", fetchJson("/status")],
+    ["health", fetchJson("/health", signal)],
+    ["status", fetchJson(appendAgentParam("/status"), signal)],
   ];
+
   if (currentModule.key === "overview") {
-    requests.push(["events", fetchJson("/events?limit=5")]);
-    requests.push(["detections", fetchJson("/detections?limit=4")]);
+    requests.push(["events", fetchJson(appendAgentParam("/events?limit=5"), signal)]);
+    requests.push(["detections", fetchJson(appendAgentParam("/detections?limit=4"), signal)]);
   } else if (currentModule.key === "events") {
     requests.push([
       "events",
-      fetchJson(endpointWithFilters("/events", elements.eventsFilters, 100)),
+      fetchJson(endpointWithFilters("/events", elements.eventsFilters, 100), signal),
     ]);
   } else if (currentModule.key === "detections") {
     requests.push([
       "detections",
-      fetchJson(endpointWithFilters("/detections", elements.detectionsFilters, 100)),
+      fetchJson(endpointWithFilters("/detections", elements.detectionsFilters, 100), signal),
     ]);
   } else if (currentModule.key === "responses") {
     requests.push([
       "responses",
-      fetchJson(endpointWithFilters("/responses", elements.responsesFilters, 100)),
+      fetchJson(endpointWithFilters("/responses", elements.responsesFilters, 100), signal),
     ]);
-  } else if (currentModule.key === "servers") {
-    requests.push(["agents", fetchJson("/agents")]);
   } else if (currentModule.key === "users") {
-    requests.push(["users", fetchJson("/admin/users")]);
+    requests.push(["users", fetchJson("/admin/users", signal)]);
   } else if (currentModule.key === "notifications") {
-    requests.push(["notifications", fetchJson(endpointWithFilters("/notifications", elements.notificationsFilters, 100))]);
-    requests.push(["notificationSummary", fetchJson("/notifications/summary")]);
+    requests.push([
+      "notifications",
+      fetchJson(endpointWithFilters("/notifications", elements.notificationsFilters, 100), signal),
+    ]);
+    requests.push(["notificationSummary", fetchJson("/notifications/summary", signal)]);
   }
   return requests;
 }
@@ -641,7 +843,7 @@ function renderModuleResult(key, result) {
       renderEvents(result.value, body, compact);
       if (!compact) elements.eventsCount.textContent = `${result.value.length} resultados`;
     } else {
-      body.replaceChildren(stateRow(compact ? 4 : 5, "No fue posible cargar los eventos.", true));
+      body.replaceChildren(stateRow(compact ? 5 : 6, "No fue posible cargar los eventos.", true));
     }
   }
   if (key === "detections") {
@@ -654,7 +856,7 @@ function renderModuleResult(key, result) {
         elements.detectionsCount.textContent = `${result.value.length} resultados`;
       }
     } else {
-      body.replaceChildren(stateRow(5, "No fue posible cargar las detecciones.", true));
+      body.replaceChildren(stateRow(6, "No fue posible cargar las detecciones.", true));
     }
   }
   if (key === "responses") {
@@ -663,7 +865,7 @@ function renderModuleResult(key, result) {
       elements.responsesCount.textContent = `${result.value.length} resultados`;
     } else {
       elements.responsesBody.replaceChildren(
-        stateRow(7, "No fue posible cargar las respuestas.", true),
+        stateRow(8, "No fue posible cargar las respuestas.", true),
       );
     }
   }
@@ -697,7 +899,10 @@ function renderModuleResult(key, result) {
 }
 
 async function refreshDashboard() {
-  if (refreshInProgress) return;
+  const generation = ++refreshGeneration;
+  refreshController?.abort();
+  const controller = new AbortController();
+  refreshController = controller;
   refreshInProgress = true;
   elements.refreshButton.disabled = true;
   elements.refreshButton.setAttribute("aria-busy", "true");
@@ -705,38 +910,95 @@ async function refreshDashboard() {
   setApiState("loading", "Actualizando");
 
   try {
-    const requests = moduleRequests();
+    const agentsResult = await Promise.resolve(
+      fetchJson("/agents", controller.signal),
+    ).then(
+      (value) => ({ status: "fulfilled", value }),
+      (reason) => ({ status: "rejected", reason }),
+    );
+
+    if (generation !== refreshGeneration) return;
+
+    if (agentsResult.status === "fulfilled" && Array.isArray(agentsResult.value)) {
+      knownAgents = agentsResult.value;
+      if (
+        selectedAgentId &&
+        !knownAgents.some((agent) => agent.agent_id === selectedAgentId)
+      ) {
+        selectedAgentId = null;
+        updateAgentQueryInLocation();
+      }
+      renderAgentSelector();
+      renderFleetSummary(knownAgents);
+      updateCurrentUserScope();
+      if (currentModule.key === "servers") renderAgents(knownAgents);
+    } else {
+      renderFleetError();
+      if (currentModule.key === "servers") {
+        elements.serversBody.replaceChildren(
+          stateRow(5, "No fue posible cargar los servidores.", true),
+        );
+      }
+    }
+
+    const requests = moduleRequests(controller.signal);
     const settled = await Promise.allSettled(requests.map(([, request]) => request));
+    if (generation !== refreshGeneration) return;
+
     const results = Object.fromEntries(
       requests.map(([key], index) => [key, settled[index]]),
     );
 
-    if (results.health.status === "fulfilled") setApiState("online", "API operativa");
-    else setApiState("offline", "API no disponible");
+    if (results.health?.status === "fulfilled") setApiState("online", "API operativa");
 
-    if (results.status.status === "fulfilled") renderStatus(results.status.value);
-    else renderStatusError();
+    if (results.status?.status === "fulfilled") {
+      renderStatus(results.status.value);
+    } else if (results.status?.reason?.status === 404 && selectedAgentId) {
+      selectedAgentId = null;
+      updateAgentQueryInLocation();
+      renderAgentSelector();
+      elements.globalAlert.textContent = "El servidor seleccionado ya no está disponible. Se cambió a Todos los servidores.";
+      elements.globalAlert.hidden = false;
+      await refreshDashboard();
+      return;
+    } else {
+      renderStatusError();
+    }
 
     Object.entries(results).forEach(([key, result]) => {
       if (!["health", "status"].includes(key)) renderModuleResult(key, result);
     });
 
-    const successes = settled.filter((result) => result.status === "fulfilled").length;
-    if (successes < settled.length) {
+    const initialSuccesses = agentsResult.status === "fulfilled" ? 1 : 0;
+    const successes = initialSuccesses +
+      settled.filter((result) => result.status === "fulfilled").length;
+    const totalRequests = 1 + settled.length;
+
+    if (successes < totalRequests && elements.globalAlert.hidden) {
       elements.globalAlert.textContent = successes === 0
-        ? "No fue posible conectar con la API local."
+        ? "No fue posible conectar con la API."
         : "Algunos datos no pudieron actualizarse. La información visible puede estar incompleta.";
       elements.globalAlert.hidden = false;
     }
+
     if (successes > 0) {
       elements.lastUpdated.textContent = new Intl.DateTimeFormat("es-GT", {
         timeStyle: "medium",
       }).format(new Date());
     }
+  } catch (error) {
+    if (error.name !== "AbortError" && generation === refreshGeneration) {
+      elements.globalAlert.textContent = "No fue posible actualizar el dashboard.";
+      elements.globalAlert.hidden = false;
+      setApiState("offline", "API no disponible");
+    }
   } finally {
-    refreshInProgress = false;
-    elements.refreshButton.disabled = false;
-    elements.refreshButton.removeAttribute("aria-busy");
+    if (generation === refreshGeneration) {
+      refreshInProgress = false;
+      elements.refreshButton.disabled = false;
+      elements.refreshButton.removeAttribute("aria-busy");
+      if (refreshController === controller) refreshController = null;
+    }
   }
 }
 
@@ -768,14 +1030,29 @@ function configureFilters() {
   if (!form) return;
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    const query = filterParams(form).toString();
-    const nextLocation = query ? `${normalizedPath}?${query}` : normalizedPath;
+    const params = filterParams(form);
+    const nextLocation = params.toString()
+      ? `${normalizedPath}?${params.toString()}`
+      : normalizedPath;
     window.history.replaceState(null, "", nextLocation);
     refreshAndReschedule();
   });
   form.querySelector("[data-reset-filters]").addEventListener("click", () => {
     form.reset();
-    window.history.replaceState(null, "", normalizedPath);
+    const params = new URLSearchParams();
+    if (selectedAgentId && currentModule.key !== "notifications") {
+      params.set("agent_id", selectedAgentId);
+    }
+    const query = params.toString();
+    window.history.replaceState(null, "", query ? `${normalizedPath}?${query}` : normalizedPath);
+    refreshAndReschedule();
+  });
+}
+
+function configureAgentSelector() {
+  elements.agentSelector.addEventListener("change", () => {
+    selectedAgentId = elements.agentSelector.value || null;
+    updateAgentQueryInLocation();
     refreshAndReschedule();
   });
 }
@@ -851,6 +1128,7 @@ async function initializeDashboard() {
   activateModule();
   populateFiltersFromLocation();
   configureFilters();
+  configureAgentSelector();
   configureAccountActions();
   configureServerActions();
   elements.refreshButton.addEventListener("click", refreshAndReschedule);

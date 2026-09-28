@@ -104,7 +104,7 @@ def test_dashboard_local_assets_are_accessible(tmp_path: Path) -> None:
 
     assert script.status_code == 200
     assert script.headers["content-type"].startswith("text/javascript")
-    assert 'fetchJson("/status")' in script.text
+    assert 'fetchJson(appendAgentParam("/status"), signal)' in script.text
     assert "innerHTML" not in script.text
     assert "eval(" not in script.text
     assert "setInterval" not in script.text
@@ -160,11 +160,11 @@ def test_dashboard_uses_supported_filters_and_overview_limits(tmp_path: Path) ->
     assert 'name="severity"' in html
     assert 'name="category"' in html
     assert 'name="event_type"' in html
-    assert 'name="hostname"' in html
+    assert 'id="agent-selector"' in html
     assert "Mis servidores" in html
     assert "Conectar servidor" in html
-    assert 'fetchJson("/events?limit=5")' in script
-    assert 'fetchJson("/detections?limit=4")' in script
+    assert 'fetchJson(appendAgentParam("/events?limit=5"), signal)' in script
+    assert 'fetchJson(appendAgentParam("/detections?limit=4"), signal)' in script
     assert 'endpointWithFilters("/events"' in script
     assert 'endpointWithFilters("/detections"' in script
     assert 'endpointWithFilters("/responses"' in script
@@ -217,8 +217,8 @@ def test_dashboard_uses_local_assets_and_relative_api_paths(tmp_path: Path) -> N
 
     assert "https://" not in html
     assert "http://" not in html
-    assert 'fetchJson("/health")' in script
-    assert 'fetchJson("/status")' in script
+    assert 'fetchJson("/health", signal)' in script
+    assert 'fetchJson(appendAgentParam("/status"), signal)' in script
     assert "textContent" in script
 
 
