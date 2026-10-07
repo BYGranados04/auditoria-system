@@ -39,6 +39,7 @@ def test_response_execution_uses_preassigned_event_id(
         interval=1,
         state_dir=tmp_path / "state",
         log_dir=tmp_path / "logs",
+        identity_file=tmp_path / "agent-identity.json",
     )
 
     agent = ContinuousAgent(
@@ -98,6 +99,7 @@ def test_agent_uses_dry_run_in_audit_only(
         log_dir=tmp_path / "logs",
         response_mode="audit_only",
         allow_temporary_ip_block=False,
+        identity_file=tmp_path / "agent-identity.json",
     )
 
     agent = ContinuousAgent(
@@ -117,6 +119,7 @@ def test_agent_uses_dry_run_when_automatic_not_allowed(
         log_dir=tmp_path / "logs",
         response_mode="automatic",
         allow_temporary_ip_block=False,
+        identity_file=tmp_path / "agent-identity.json",
     )
 
     agent = ContinuousAgent(
@@ -137,6 +140,7 @@ def test_agent_builds_real_executor_only_when_authorized(
         response_mode="automatic",
         allow_temporary_ip_block=True,
         trusted_admin_ips=("192.0.2.10",),
+        identity_file=tmp_path / "agent-identity.json",
     )
 
     agent = ContinuousAgent(
@@ -200,6 +204,7 @@ def test_ssh_detection_reaches_real_executor_with_fake_firewall(
         response_mode="automatic",
         allow_temporary_ip_block=True,
         temporary_block_seconds=900,
+        identity_file=tmp_path / "agent-identity.json",
     )
 
     agent = ContinuousAgent(

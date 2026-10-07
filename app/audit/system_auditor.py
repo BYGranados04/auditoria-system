@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import platform
-import pwd
 import socket
 import subprocess
 from dataclasses import asdict, dataclass
@@ -10,6 +9,13 @@ from pathlib import Path
 from typing import Any
 
 import psutil
+
+try:
+    import pwd
+except ImportError:  # pragma: no cover - depende de la plataforma
+    # `pwd` es exclusivo de Unix. En plataformas sin él (por ejemplo,
+    # Windows en desarrollo) la enumeración de usuarios devuelve vacío.
+    pwd = None  # type: ignore[assignment]
 
 
 @dataclass
@@ -261,6 +267,9 @@ class SystemAuditor:
     @staticmethod
     def _users() -> list[dict[str, Any]]:
         users: list[dict[str, Any]] = []
+
+        if pwd is None:
+            return users
 
         for entry in pwd.getpwall():
             if entry.pw_uid == 0 or entry.pw_uid >= 1000:

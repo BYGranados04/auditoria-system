@@ -1,5 +1,5 @@
 [Unit]
-Description=Auditoria System - API local de consulta
+Description=Nexora - API local de consulta
 Documentation=https://github.com/BYGranados04/auditoria-system
 After=network.target
 
@@ -15,6 +15,7 @@ EnvironmentFile=-/etc/auditoria-system/agent.env
 Environment=AUDITORIA_AUTH_DB=/var/lib/auditoria-system-auth/auth.db
 
 StateDirectory=auditoria-system-auth
+StateDirectory=auditoria-system-central
 StateDirectoryMode=0700
 
 ExecStart=/opt/auditoria-system/.venv/bin/uvicorn app.api.main:app --host 127.0.0.1 --port 8000 --workers 1 --no-access-log

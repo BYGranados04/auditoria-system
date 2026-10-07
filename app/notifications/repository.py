@@ -38,6 +38,17 @@ class NotificationRepository:
     def _is_unavailable(self) -> bool:
         return self.read_only and not self.database_path.is_file()
 
+    def _supports_agent_id(self) -> bool:
+        if not self.database_path.is_file():
+            return False
+        with self._connection() as connection:
+            return "agent_id" in {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(notifications)"
+                ).fetchall()
+            }
+
     def initialize(self) -> None:
         if self.read_only:
             raise RuntimeError(
@@ -47,17 +58,31 @@ class NotificationRepository:
         with self._connection() as connection:
             connection.execute("""CREATE TABLE IF NOT EXISTS notifications (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL,
+                agent_id TEXT,
                 channel TEXT NOT NULL, provider TEXT NOT NULL, recipient TEXT NOT NULL,
                 hostname TEXT NOT NULL, severity TEXT NOT NULL, status TEXT NOT NULL,
                 created_at TEXT NOT NULL, sent_at TEXT, error TEXT,
                 provider_message_id TEXT,
                 UNIQUE(event_id, channel, recipient))""")
+            columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(notifications)"
+                ).fetchall()
+            }
+            if "agent_id" not in columns:
+                connection.execute("ALTER TABLE notifications ADD COLUMN agent_id TEXT")
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_notifications_agent_id "
+                "ON notifications (agent_id)"
+            )
 
     @staticmethod
     def _row(row: sqlite3.Row) -> NotificationAttempt:
         return NotificationAttempt(
             id=row["id"],
             event_id=row["event_id"],
+            agent_id=(row["agent_id"] if "agent_id" in row.keys() else None),
             channel=row["channel"],
             provider=row["provider"],
             recipient=row["recipient"],
@@ -74,6 +99,7 @@ class NotificationRepository:
         self,
         *,
         event_id: str,
+        agent_id: str | None = None,
         provider: str,
         recipient: str,
         hostname: str,
@@ -85,9 +111,18 @@ class NotificationRepository:
             try:
                 connection.execute(
                     "INSERT INTO notifications "
-                    "(event_id, channel, provider, recipient, hostname, severity, "
-                    "status, created_at) VALUES (?, 'email', ?, ?, ?, ?, 'pending', ?)",
-                    (event_id, provider, recipient, hostname, severity, timestamp),
+                    "(event_id, agent_id, channel, provider, recipient, hostname, "
+                    "severity, status, created_at) "
+                    "VALUES (?, ?, 'email', ?, ?, ?, ?, 'pending', ?)",
+                    (
+                        event_id,
+                        agent_id,
+                        provider,
+                        recipient,
+                        hostname,
+                        severity,
+                        timestamp,
+                    ),
                 )
                 created = True
             except sqlite3.IntegrityError:
@@ -124,6 +159,7 @@ class NotificationRepository:
     def list(
         self,
         *,
+        agent_ids: tuple[str, ...] | None = None,
         hostnames: tuple[str, ...] | None = None,
         status: str | None = None,
         severity: str | None = None,
@@ -133,8 +169,15 @@ class NotificationRepository:
             return []
         if not self.read_only:
             self.initialize()
+        elif agent_ids is not None and not self._supports_agent_id():
+            return []
         clauses: list[str] = []
         parameters: list[object] = []
+        if agent_ids is not None:
+            if not agent_ids:
+                return []
+            clauses.append("agent_id IN (" + ", ".join("?" for _ in agent_ids) + ")")
+            parameters.extend(agent_ids)
         if hostnames is not None:
             if not hostnames:
                 return []
@@ -166,7 +209,12 @@ class NotificationRepository:
             ).fetchone()
         return self._row(row) if row else None
 
-    def summary(self, *, hostnames: tuple[str, ...] | None = None) -> dict[str, int]:
+    def summary(
+        self,
+        *,
+        agent_ids: tuple[str, ...] | None = None,
+        hostnames: tuple[str, ...] | None = None,
+    ) -> dict[str, int]:
         empty = {
             "total": 0,
             "pending": 0,
@@ -179,13 +227,21 @@ class NotificationRepository:
             return empty
         if not self.read_only:
             self.initialize()
-        if hostnames is not None and not hostnames:
+        elif agent_ids is not None and not self._supports_agent_id():
+            return empty
+        if (agent_ids is not None and not agent_ids) or (
+            hostnames is not None and not hostnames
+        ):
             return empty
         parameters: list[object] = []
-        where = ""
+        clauses: list[str] = []
+        if agent_ids is not None:
+            clauses.append("agent_id IN (" + ", ".join("?" for _ in agent_ids) + ")")
+            parameters.extend(agent_ids)
         if hostnames is not None:
-            where = " WHERE hostname IN (" + ", ".join("?" for _ in hostnames) + ")"
+            clauses.append("hostname IN (" + ", ".join("?" for _ in hostnames) + ")")
             parameters.extend(hostnames)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         query = (
             "SELECT COUNT(*) AS total, "
             "SUM(status = 'pending') AS pending, SUM(status = 'sent') AS sent, "

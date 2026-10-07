@@ -14,6 +14,7 @@ class NotificationResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: int
     event_id: str
+    agent_id: str | None
     channel: str
     provider: str
     recipient: str
@@ -47,7 +48,7 @@ def build_notification_router(
     router = APIRouter(tags=["notifications"])
 
     def scope(session: AuthenticatedSession) -> tuple[str, ...] | None:
-        return manager.get_allowed_hostnames(session)
+        return manager.get_allowed_agent_ids(session)
 
     @router.get("/notifications", response_model=list[NotificationResponse])
     def list_notifications(
@@ -59,12 +60,15 @@ def build_notification_router(
             manager.require_authenticated
         ),
     ) -> list[NotificationResponse]:
-        allowed = manager.resolve_hostname_scope(session, hostname)
-        selected = (hostname,) if hostname is not None else allowed
+        allowed = scope(session)
         return [
             _response(item)
             for item in repository.list(
-                hostnames=selected, status=status, severity=severity, limit=limit
+                agent_ids=allowed,
+                hostnames=(hostname,) if hostname is not None else None,
+                status=status,
+                severity=severity,
+                limit=limit,
             )
         ]
 
@@ -74,7 +78,7 @@ def build_notification_router(
             manager.require_authenticated
         ),
     ) -> NotificationSummary:
-        return NotificationSummary(**repository.summary(hostnames=scope(session)))
+        return NotificationSummary(**repository.summary(agent_ids=scope(session)))
 
     @router.get("/notifications/{notification_id}", response_model=NotificationResponse)
     def get_notification(
@@ -87,7 +91,7 @@ def build_notification_router(
         if notification is None:
             raise HTTPException(status_code=404, detail="Notificación no encontrada.")
         allowed = scope(session)
-        if allowed is not None and notification.hostname not in allowed:
+        if allowed is not None and notification.agent_id not in allowed:
             raise HTTPException(status_code=404, detail="Notificación no encontrada.")
         return _response(notification)
 

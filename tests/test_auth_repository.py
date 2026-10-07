@@ -252,3 +252,127 @@ def test_migrates_v2_legacy_host_access_without_using_it_for_ownership(
         "agent_credentials",
     } <= table_names
     assert repository.get_owned_agent_hostnames(1) == ("agent-host",)
+
+
+def test_valid_agent_credential_resolves_agent_and_owner(tmp_path) -> None:
+    repository = AuthRepository(tmp_path / "auth.db", scrypt_parameters=TEST_SCRYPT)
+    owner = repository.create_user(
+        username="agent-owner",
+        password=TEST_PASSWORD,
+        role="viewer",
+    )
+    registration = repository.create_agent_registration_token(int(owner["id"]))
+    enrolled = repository.enroll_agent(
+        registration_token=registration.token,
+        hostname="credential-host",
+    )
+
+    authenticated = repository.authenticate_agent_credential(
+        enrolled.credential
+    )
+
+    assert authenticated is not None
+    assert authenticated["agent_id"] == enrolled.agent["agent_id"]
+    assert authenticated["owner_user_id"] == owner["id"]
+    assert "credential" not in authenticated
+    assert "credential_digest" not in authenticated
+
+
+def test_invalid_and_revoked_agent_credentials_are_rejected(tmp_path) -> None:
+    repository = AuthRepository(tmp_path / "auth.db", scrypt_parameters=TEST_SCRYPT)
+    owner = repository.create_user(
+        username="credential-owner",
+        password=TEST_PASSWORD,
+        role="viewer",
+    )
+    registration = repository.create_agent_registration_token(int(owner["id"]))
+    enrolled = repository.enroll_agent(
+        registration_token=registration.token,
+        hostname="revoked-host",
+    )
+
+    assert repository.authenticate_agent_credential("agc_invalid") is None
+
+    with sqlite3.connect(repository.database_path) as connection:
+        connection.execute(
+            """
+            UPDATE agent_credentials
+            SET revoked_at = ?
+            WHERE agent_id = ?
+            """,
+            (
+                "2026-09-27T00:00:00+00:00",
+                enrolled.agent["agent_id"],
+            ),
+        )
+
+    assert repository.authenticate_agent_credential(enrolled.credential) is None
+
+
+def test_agent_credential_is_rejected_when_owner_is_inactive(tmp_path) -> None:
+    repository = AuthRepository(tmp_path / "auth.db", scrypt_parameters=TEST_SCRYPT)
+    repository.create_user(
+        username="remaining-admin",
+        password=TEST_PASSWORD,
+        role="superadmin",
+    )
+    owner = repository.create_user(
+        username="inactive-owner",
+        password=TEST_PASSWORD,
+        role="viewer",
+    )
+    registration = repository.create_agent_registration_token(int(owner["id"]))
+    enrolled = repository.enroll_agent(
+        registration_token=registration.token,
+        hostname="inactive-owner-host",
+    )
+    repository.set_user_active(
+        int(owner["id"]),
+        active=False,
+        actor_user_id=1,
+    )
+
+    assert repository.authenticate_agent_credential(enrolled.credential) is None
+
+
+def test_owned_agent_ids_come_from_agents_not_legacy_host_access(tmp_path) -> None:
+    repository = AuthRepository(tmp_path / "auth.db", scrypt_parameters=TEST_SCRYPT)
+    owner = repository.create_user(
+        username="scope-owner",
+        password=TEST_PASSWORD,
+        role="viewer",
+    )
+    other = repository.create_user(
+        username="scope-other",
+        password=TEST_PASSWORD,
+        role="viewer",
+    )
+    expected_ids = []
+    for hostname in ("scope-b", "scope-a"):
+        registration = repository.create_agent_registration_token(int(owner["id"]))
+        enrolled = repository.enroll_agent(
+            registration_token=registration.token,
+            hostname=hostname,
+        )
+        expected_ids.append(str(enrolled.agent["agent_id"]))
+    other_registration = repository.create_agent_registration_token(int(other["id"]))
+    repository.enroll_agent(
+        registration_token=other_registration.token,
+        hostname="other-host",
+    )
+    with sqlite3.connect(repository.database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO user_host_access (user_id, hostname, created_at)
+            VALUES (?, ?, ?)
+            """,
+            (
+                owner["id"],
+                "legacy-only-host",
+                "2026-09-27T00:00:00+00:00",
+            ),
+        )
+
+    assert repository.owned_agent_ids(int(owner["id"])) == tuple(
+        sorted(expected_ids)
+    )

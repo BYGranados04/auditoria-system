@@ -13,6 +13,7 @@ def settings(
         interval=1,
         state_dir=tmp_path / "state",
         log_dir=tmp_path / "logs",
+        identity_file=tmp_path / "agent-identity.json",
     )
 
 

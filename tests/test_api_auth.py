@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from app.api.main import create_app
 from app.auth.config import AuthSettings
 from app.auth.repository import AuthRepository
+from app.central.config import CentralSettings
 from app.core.config import AgentSettings
 from app.core.events import SecurityEvent
 from app.storage.event_repository import EventRepository
@@ -23,6 +24,7 @@ def build_application(
         interval=1,
         state_dir=tmp_path / "state",
         log_dir=tmp_path / "logs",
+        identity_file=tmp_path / "agent-identity.json",
     )
     settings.state_dir.mkdir(parents=True, exist_ok=True)
     event_repository = EventRepository(settings.database_file)
@@ -60,6 +62,9 @@ def build_application(
             cookie_secure=cookie_secure,
         ),
         auth_repository=auth_repository,
+        central_settings=CentralSettings(
+            database_file=tmp_path / "central" / "central.db"
+        ),
         clock=clock,
     )
     return TestClient(application), auth_repository, settings.database_file

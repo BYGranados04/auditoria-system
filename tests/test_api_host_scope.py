@@ -6,6 +6,8 @@ from fastapi.testclient import TestClient
 from app.api.main import create_app
 from app.auth.config import AuthSettings
 from app.auth.repository import AuthRepository
+from app.central.config import CentralSettings
+from app.central.repository import CentralEventRepository
 from app.core.config import AgentSettings
 from app.core.events import SecurityEvent
 from app.storage.event_repository import EventRepository
@@ -48,6 +50,7 @@ def build_scoped_application(
         interval=1,
         state_dir=tmp_path / "state",
         log_dir=tmp_path / "logs",
+        identity_file=tmp_path / "agent-identity.json",
     )
     settings.state_dir.mkdir(parents=True)
     writable = EventRepository(settings.database_file)
@@ -69,6 +72,10 @@ def build_scoped_application(
 
     auth_database = tmp_path / "auth" / "auth.db"
     auth_repository = AuthRepository(auth_database, scrypt_parameters=TEST_SCRYPT)
+    central_settings = CentralSettings(
+        database_file=tmp_path / "central" / "central.db"
+    )
+    central_repository = CentralEventRepository(central_settings.database_file)
     users = {}
     for username, role, hostnames in (
         ("admin", "superadmin", None),
@@ -86,10 +93,37 @@ def build_scoped_application(
                 registration = auth_repository.create_agent_registration_token(
                     int(user["id"])
                 )
-                auth_repository.enroll_agent(
+                enrolled = auth_repository.enroll_agent(
                     registration_token=registration.token,
                     hostname=hostname,
                 )
+                for category, event_type, severity, evidence in (
+                    ("system", "AGENT_STARTED", "low", {}),
+                    (
+                        "detection",
+                        "SSH_BRUTE_FORCE_ATTEMPT",
+                        "high",
+                        {"source_ip": "192.0.2.10"},
+                    ),
+                    (
+                        "response",
+                        "RESPONSE_DECISION",
+                        "medium",
+                        {"target_ip": "192.0.2.10", "action": "block"},
+                    ),
+                ):
+                    central_repository.add_event(
+                        agent_id=str(enrolled.agent["agent_id"]),
+                        event=SecurityEvent(
+                            hostname=hostname,
+                            source="test",
+                            category=category,
+                            event_type=event_type,
+                            severity=severity,
+                            description=f"Evento central de {hostname}",
+                            evidence=evidence,
+                        ),
+                    )
 
     application = create_app(
         settings=settings,
@@ -99,6 +133,8 @@ def build_scoped_application(
             central_url="https://central.example",
         ),
         auth_repository=auth_repository,
+        central_settings=central_settings,
+        central_repository=central_repository,
     )
     return TestClient(application), auth_repository, settings.database_file, users
 
@@ -132,12 +168,14 @@ def test_viewer_scope_blocks_cross_host_reads_and_admin_endpoints(tmp_path) -> N
         assert len(response.json()) == expected_count
         assert {event["hostname"] for event in response.json()} == {"host-a"}
         assert viewer.get(endpoint, params={"hostname": "host-a"}).status_code == 200
-        assert viewer.get(endpoint, params={"hostname": "host-b"}).status_code == 403
+        other_hostname = viewer.get(endpoint, params={"hostname": "host-b"})
+        assert other_hostname.status_code == 200
+        assert other_hostname.json() == []
 
     status = viewer.get("/status")
     assert status.status_code == 200
     assert status.json()["total_events"] == 3
-    assert status.json()["live_response_blocks"] == 1
+    assert status.json()["live_response_blocks"] is None
     assert status.json()["hostname"] == "host-a"
 
     agents = viewer.get("/agents")
@@ -255,7 +293,9 @@ def test_viewer_without_agents_receives_no_audit_information(tmp_path) -> None:
     assert viewer.get("/detections").json() == []
     assert viewer.get("/responses").json() == []
     assert viewer.get("/status").json()["total_events"] == 0
-    assert viewer.get("/events", params={"hostname": "host-a"}).status_code == 403
+    filtered = viewer.get("/events", params={"hostname": "host-a"})
+    assert filtered.status_code == 200
+    assert filtered.json() == []
 
 
 def test_auth_and_agent_operations_leave_audit_database_unchanged(tmp_path) -> None:

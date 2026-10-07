@@ -4,7 +4,19 @@ __pycache__/
 *.pyo
 *.log
 .env
-data/*.db
+.env.*
+!.env.example
+agent-identity.json
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite3
+backup-*/
+backups/
+*.pem
+*.key
 .pytest_cache/
 
 # Runtime state

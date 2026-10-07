@@ -19,6 +19,7 @@ class NotificationMessage:
 class NotificationAttempt:
     id: int
     event_id: str
+    agent_id: str | None
     channel: str
     provider: str
     recipient: str

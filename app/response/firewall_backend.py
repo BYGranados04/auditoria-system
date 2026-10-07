@@ -7,7 +7,10 @@ from dataclasses import dataclass
 from app.response.firewall import (
     NftablesFirewallPlanner,
     TemporaryBlockPlan,
+    TemporaryPortBlockPlan,
 )
+
+AnyBlockPlan = TemporaryBlockPlan | TemporaryPortBlockPlan
 
 
 @dataclass(frozen=True)
@@ -164,9 +167,30 @@ class NftablesFirewallBackend:
 
         return True
 
+    def prepare_port_blocking(self) -> bool:
+        """Garantiza las estructuras de bloqueo IP+puerto.
+
+        Primero prepara la tabla base (sin alterar su comportamiento
+        histórico) y luego agrega, de forma idempotente, los sets y la cadena
+        ``input_port``. Devuelve True si la tabla base fue creada.
+        """
+
+        created = self.prepare()
+
+        script = NftablesFirewallPlanner.render_prepare_port_ruleset()
+
+        self._run_script(
+            script,
+            check_only=True,
+        )
+
+        self._run_script(script)
+
+        return created
+
     def add_temporary_block(
         self,
-        plan: TemporaryBlockPlan,
+        plan: AnyBlockPlan,
     ) -> None:
         self._run_script(
             plan.render_add_element(),
@@ -177,7 +201,7 @@ class NftablesFirewallBackend:
 
     def remove_block(
         self,
-        plan: TemporaryBlockPlan,
+        plan: AnyBlockPlan,
     ) -> None:
         self._run_script(
             plan.render_delete_element(),

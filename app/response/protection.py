@@ -37,8 +37,12 @@ class ResponseProtectionResolver:
         *,
         trusted_admin_ips: Iterable[str] = (),
         route_runner: RouteRunner | None = None,
+        ssh_ports: Iterable[int] = (22,),
     ) -> None:
         self.trusted_admin_ips = tuple(trusted_admin_ips)
+        # El puerto 22 siempre se protege; un puerto SSH personalizado solo
+        # amplía la protección de sesiones administrativas activas.
+        self.ssh_ports = frozenset({22, *(int(port) for port in ssh_ports)})
         self._route_runner = route_runner or self._default_route_runner
 
     @staticmethod
@@ -113,7 +117,7 @@ class ResponseProtectionResolver:
             if not connection.laddr:
                 continue
 
-            if connection.laddr.port != 22:
+            if connection.laddr.port not in self.ssh_ports:
                 continue
 
             if not connection.raddr:

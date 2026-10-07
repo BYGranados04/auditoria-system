@@ -37,12 +37,12 @@ class NotificationService:
         return NotificationMessage(
             recipient=recipient,
             subject=(
-                f"[Auditoria System] Detección {event.severity.upper()} "
+                f"[Nexora] Detección {event.severity.upper()} "
                 f"en {event.hostname}"
             ),
-            text=f"Auditoria System\nAlerta de seguridad\n\n{details}",
+            text=f"Nexora\nAlerta de seguridad\n\n{details}",
             html=(
-                "<h1>Auditoria System</h1><p>Alerta de seguridad</p>"
+                "<h1>Nexora</h1><p>Alerta de seguridad</p>"
                 f"<pre>{escape(details)}</pre>"
             ),
         )
@@ -53,6 +53,7 @@ class NotificationService:
         recipient = self.settings.recipient or ""
         attempt, created = self.repository.create_pending(
             event_id=str(event.event_id),
+            agent_id=event.agent_id,
             provider=self.provider.name,
             recipient=recipient,
             hostname=event.hostname,

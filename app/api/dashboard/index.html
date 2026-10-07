@@ -4,8 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#101214">
-  <title>Overview | Auditoria System</title>
+  <meta name="theme-color" content="#0e1114">
+  <title>Dashboard | Nexora</title>
+  <meta name="description" content="Monitoreo, detección y respuesta para servidores Linux.">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iIzNCODJGNiIgZD0iTTQgNGg0bDEyIDE2aC00WiIvPjxwYXRoIGZpbGw9IiMxNEI4QTYiIGQ9Ik00IDRoNHYxNkg0Wk0xNiA0aDR2MTZoLTRaIi8+PC9zdmc+">
   <link rel="stylesheet" href="/dashboard/assets/styles.css">
   <script src="/dashboard/assets/dashboard.js" defer></script>
 </head>
@@ -14,35 +16,50 @@
   <div id="app-shell" class="app-shell">
     <aside id="sidebar" class="sidebar" aria-label="Navegación principal">
       <div class="sidebar-header">
-        <div class="sidebar-title">Auditoria System</div>
+        <div class="brand"><svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path class="mark-diag" d="M4 4h4l12 16h-4Z"></path><path class="mark-stem" d="M4 4h4v16H4ZM16 4h4v16h-4Z"></path></svg><span class="sidebar-title">Nexora</span></div>
         <button id="sidebar-collapse" class="sidebar-control" type="button" aria-controls="sidebar" aria-label="Contraer menú" aria-expanded="true">
           <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m10 3-5 5 5 5"></path></svg>
         </button>
       </div>
       <nav>
-        <a class="nav-item" data-module="overview" href="/dashboard" aria-label="Overview" title="Overview">
-          <span class="nav-icon" aria-hidden="true">▦</span><span class="nav-label">Overview</span>
-        </a>
-        <a class="nav-item" data-module="events" href="/dashboard/events" aria-label="Eventos" title="Eventos">
-          <span class="nav-icon" aria-hidden="true">≡</span><span class="nav-label">Eventos</span>
-        </a>
-        <a class="nav-item" data-module="detections" href="/dashboard/detections" aria-label="Detecciones" title="Detecciones">
-          <span class="nav-icon" aria-hidden="true">△</span><span class="nav-label">Detecciones</span>
-        </a>
-        <a class="nav-item" data-module="responses" href="/dashboard/responses" aria-label="Respuestas" title="Respuestas">
-          <span class="nav-icon" aria-hidden="true">↳</span><span class="nav-label">Respuestas</span>
-        </a>
-        <a class="nav-item" data-module="notifications" href="/dashboard/notifications" aria-label="Notificaciones" title="Notificaciones">
-          <span class="nav-icon" aria-hidden="true">✉</span><span class="nav-label">Notificaciones</span>
-        </a>
-        <a class="nav-item" data-module="servers" href="/dashboard/servers" aria-label="Mis servidores" title="Mis servidores">
-          <span class="nav-icon" aria-hidden="true">▣</span><span class="nav-label">Mis servidores</span>
-        </a>
-        <a class="nav-item" data-module="users" href="/dashboard/users" aria-label="Usuarios" title="Usuarios" hidden>
-          <span class="nav-icon" aria-hidden="true">○</span><span class="nav-label">Usuarios</span>
-        </a>
+        <div class="nav-group" role="group" aria-labelledby="nav-group-overview">
+          <p id="nav-group-overview" class="nav-group-label">Resumen</p>
+          <a class="nav-item" data-module="overview" href="/dashboard" aria-label="Dashboard" title="Dashboard">
+            <svg class="nav-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="2" y="2" width="5" height="5" rx="1"></rect><rect x="9" y="2" width="5" height="5" rx="1"></rect><rect x="2" y="9" width="5" height="5" rx="1"></rect><rect x="9" y="9" width="5" height="5" rx="1"></rect></svg><span class="nav-label">Dashboard</span>
+          </a>
+        </div>
+        <div class="nav-group" role="group" aria-labelledby="nav-group-infra">
+          <p id="nav-group-infra" class="nav-group-label">Infraestructura</p>
+          <a class="nav-item" data-module="servers" href="/dashboard/servers" aria-label="Mis servidores" title="Mis servidores">
+            <svg class="nav-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="2" y="2.5" width="12" height="4.5" rx="1"></rect><rect x="2" y="9" width="12" height="4.5" rx="1"></rect><path d="M4.5 4.75h.01M4.5 11.25h.01"></path></svg><span class="nav-label">Mis servidores</span>
+          </a>
+        </div>
+        <div class="nav-group" role="group" aria-labelledby="nav-group-security">
+          <p id="nav-group-security" class="nav-group-label">Seguridad</p>
+          <a class="nav-item" data-module="incidents" href="/dashboard/incidents" aria-label="Incidentes" title="Incidentes">
+            <svg class="nav-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 1.8 13 3.6v4c0 3-2.1 5.1-5 6.6-2.9-1.5-5-3.6-5-6.6v-4Z"></path><path d="M8 5.6v2.8M8 10.4h.01"></path></svg><span class="nav-label">Incidentes</span>
+          </a>
+          <a class="nav-item" data-module="detections" href="/dashboard/detections" aria-label="Detecciones" title="Detecciones">
+            <svg class="nav-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="5.5"></circle><circle cx="8" cy="8" r="1.8"></circle><path d="M8 2.5V4.2M8 11.8v1.7M2.5 8h1.7M11.8 8h1.7"></path></svg><span class="nav-label">Detecciones</span>
+          </a>
+          <a class="nav-item" data-module="events" href="/dashboard/events" aria-label="Eventos" title="Eventos">
+            <svg class="nav-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M2.5 4h11M2.5 8h11M2.5 12h7"></path></svg><span class="nav-label">Eventos</span>
+          </a>
+          <a class="nav-item" data-module="responses" href="/dashboard/responses" aria-label="Respuestas" title="Respuestas">
+            <svg class="nav-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M2.5 8h7M7 4.8 10.2 8 7 11.2"></path><path d="M13 3v10"></path></svg><span class="nav-label">Respuestas</span>
+          </a>
+        </div>
+        <div class="nav-group" role="group" aria-labelledby="nav-group-admin">
+          <p id="nav-group-admin" class="nav-group-label">Administración</p>
+          <a class="nav-item" data-module="notifications" href="/dashboard/notifications" aria-label="Notificaciones" title="Notificaciones">
+            <svg class="nav-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4 11V7.2a4 4 0 0 1 8 0V11l1 1.5H3Z"></path><path d="M6.5 14h3"></path></svg><span class="nav-label">Notificaciones</span>
+          </a>
+          <a class="nav-item" data-module="users" href="/dashboard/users" aria-label="Usuarios" title="Usuarios" hidden>
+            <svg class="nav-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="5.5" r="2.5"></circle><path d="M3 13.5c.4-2.5 2.5-4 5-4s4.6 1.5 5 4"></path></svg><span class="nav-label">Usuarios</span>
+          </a>
+        </div>
       </nav>
-      <p class="sidebar-note">Solo lectura</p>
+      <div id="sidebar-account" class="sidebar-account" aria-label="Cuenta y estado"></div>
     </aside>
     <button id="sidebar-backdrop" class="sidebar-backdrop" type="button" aria-label="Cerrar menú" tabindex="-1" hidden></button>
 
@@ -52,8 +69,14 @@
           <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M2 4h12M2 8h12M2 12h12"></path></svg>
         </button>
         <div class="page-identity">
-          <h1>Auditoria System</h1>
-          <span id="hostname" class="hostname">—</span>
+          <h1 id="page-title">Dashboard</h1>
+          <span id="hostname" class="hostname">Todos los servidores</span>
+        </div>
+        <div class="server-selector-wrap">
+          <label for="agent-selector">Servidor</label>
+          <select id="agent-selector" aria-label="Seleccionar servidor">
+            <option value="">Todos los servidores</option>
+          </select>
         </div>
         <div class="topbar-actions">
           <div class="api-state" role="status" aria-live="polite">
@@ -61,14 +84,17 @@
             <span id="api-status">Comprobando API</span>
           </div>
           <div class="refresh-meta">
-            <span>Última actualización:</span>
+            <span>Actualizado</span>
             <time id="last-updated">—</time>
           </div>
-          <span id="current-user" class="current-user">—</span>
-          <button id="logout-button" class="quiet-button" type="button">Cerrar sesión</button>
           <button id="refresh-button" class="refresh-button" type="button" aria-controls="module-content">
-            <span aria-hidden="true">↻</span> Actualizar
+            <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3"></path></svg>
+            Actualizar
           </button>
+          <div class="account">
+            <span id="current-user" class="current-user">—</span>
+            <button id="logout-button" class="quiet-button" type="button">Cerrar sesión</button>
+          </div>
         </div>
       </header>
 
@@ -76,51 +102,98 @@
 
       <div id="module-content">
         <div class="module-view" data-view="overview">
-          <section class="summary-section" aria-labelledby="summary-title">
-            <div class="module-heading"><h2 id="summary-title">Overview</h2></div>
-            <div class="metric-grid" aria-live="polite">
-              <article class="metric-card"><span>Total eventos</span><strong id="metric-total" class="metric-value loading-value">—</strong></article>
-              <article class="metric-card severity-critical"><span>Críticos</span><strong id="metric-critical" class="metric-value loading-value">—</strong></article>
-              <article class="metric-card severity-high"><span>Altos</span><strong id="metric-high" class="metric-value loading-value">—</strong></article>
-              <article class="metric-card severity-medium"><span>Medios</span><strong id="metric-medium" class="metric-value loading-value">—</strong></article>
-              <article class="metric-card metric-blocks"><span>Bloqueos activos</span><strong id="metric-blocks" class="metric-value loading-value">—</strong></article>
+          <section class="kpi-band" aria-label="Resumen de infraestructura e incidentes">
+            <div class="kpi-group" aria-labelledby="kpi-infra-title" aria-live="polite">
+              <div class="kpi-heading">
+                <h2 id="kpi-infra-title">Infraestructura</h2>
+                <a class="view-all" href="/dashboard/servers">Ver servidores</a>
+              </div>
+              <div class="kpi-row">
+                <div class="kpi"><span class="kpi-label">Servidores</span><strong id="fleet-total" class="kpi-value loading-value">—</strong></div>
+                <div class="kpi kpi-online"><span class="kpi-label">En línea</span><strong id="fleet-online" class="kpi-value loading-value">—</strong></div>
+                <div class="kpi kpi-offline"><span class="kpi-label">Sin conexión</span><strong id="fleet-offline" class="kpi-value loading-value">—</strong></div>
+              </div>
+              <div id="fleet-bar" class="fleet-bar" role="img" aria-label="Estado de la flota no disponible todavía">
+                <span class="fleet-segment is-online"></span><span class="fleet-segment is-offline"></span><span class="fleet-segment is-unknown"></span>
+              </div>
+              <p id="fleet-unknown-wrap" class="kpi-note" hidden><span id="fleet-unknown">0</span> sin estado conocido</p>
+            </div>
+            <div class="kpi-group" aria-labelledby="kpi-incidents-title" aria-live="polite">
+              <div class="kpi-heading">
+                <h2 id="kpi-incidents-title">Incidentes activos</h2>
+                <a class="view-all" href="/dashboard/incidents">Ver incidentes</a>
+              </div>
+              <div class="kpi-row">
+                <div class="kpi"><span class="kpi-label">Activos</span><strong id="incidents-active" class="kpi-value loading-value">—</strong></div>
+                <div class="kpi kpi-critical"><span class="kpi-label">Críticos</span><strong id="incidents-critical" class="kpi-value loading-value">—</strong></div>
+                <div class="kpi kpi-high"><span class="kpi-label">Altos</span><strong id="incidents-high" class="kpi-value loading-value">—</strong></div>
+              </div>
+              <p class="kpi-note">Incidentes OPEN, OBSERVED o CONTAINED. Críticos y Altos cuentan solo los activos.</p>
             </div>
           </section>
 
           <section class="status-panel" aria-labelledby="status-title">
-            <h2 id="status-title">Estado</h2>
+            <h2 id="status-title">Estado operativo</h2>
             <dl class="status-details">
+              <div data-agent-only hidden><dt>Presencia</dt><dd id="status-presence"><span class="skeleton-text">Cargando</span></dd></div>
+              <div data-agent-only hidden><dt>Último contacto</dt><dd id="status-last-seen"><span class="skeleton-text">Cargando</span></dd></div>
+              <div data-agent-only hidden><dt>Hostname</dt><dd id="status-hostname" class="monospace">—</dd></div>
+              <div><dt>API</dt><dd id="status-api">Comprobando</dd></div>
               <div><dt>Modo de respuesta</dt><dd id="response-mode"><span class="skeleton-text">Cargando</span></dd></div>
               <div><dt>Bloqueo automático</dt><dd id="automatic-blocking"><span class="skeleton-text">Cargando</span></dd></div>
-              <div><dt>API</dt><dd id="status-api">Comprobando</dd></div>
-              <div><dt>Hostname</dt><dd id="status-hostname" class="monospace">—</dd></div>
+              <div><dt>Bloqueos activos</dt><dd id="metric-blocks" class="loading-value">—</dd></div>
             </dl>
           </section>
 
-          <div class="overview-activity">
-            <section class="data-panel" aria-labelledby="overview-events-title">
+          <section class="data-panel" aria-labelledby="overview-incidents-title">
+            <div class="panel-heading">
+              <h2 id="overview-incidents-title">Incidentes recientes</h2>
+              <a class="view-all" href="/dashboard/incidents">Ver todos</a>
+            </div>
+            <div class="table-wrap">
+              <table class="data-table overview-incidents-table" aria-labelledby="overview-incidents-title">
+                <thead><tr><th scope="col">Severidad</th><th scope="col">Tipo</th><th scope="col">Servidor</th><th scope="col">IP origen</th><th scope="col">Estado</th><th scope="col">Última actividad</th></tr></thead>
+                <tbody id="overview-incidents-body"><tr><td colspan="6" class="state-cell"><span class="spinner"></span> Cargando incidentes…</td></tr></tbody>
+              </table>
+            </div>
+          </section>
+
+          <div class="overview-grid">
+            <section class="data-panel" aria-labelledby="overview-servers-title">
               <div class="panel-heading">
-                <h2 id="overview-events-title">Eventos recientes</h2>
-                <a class="view-all" href="/dashboard/events">Ver todos →</a>
+                <h2 id="overview-servers-title">Servidores</h2>
+                <a class="view-all" href="/dashboard/servers">Ver todos</a>
               </div>
-              <div class="table-wrap">
-                <table class="overview-events-table" aria-labelledby="overview-events-title">
-                  <thead><tr><th>Fecha/hora</th><th>Severidad</th><th>Tipo</th><th>Descripción</th></tr></thead>
-                  <tbody id="overview-events-body"><tr><td colspan="4" class="state-cell"><span class="spinner"></span> Cargando eventos…</td></tr></tbody>
-                </table>
-              </div>
+              <ul id="overview-servers" class="server-list" aria-labelledby="overview-servers-title"><li class="state-cell"><span class="spinner"></span> Cargando servidores…</li></ul>
             </section>
 
-            <section class="data-panel" aria-labelledby="overview-detections-title">
+            <section class="data-panel" aria-labelledby="overview-activity-title">
               <div class="panel-heading">
-                <h2 id="overview-detections-title">Detecciones recientes</h2>
-                <a class="view-all" href="/dashboard/detections">Ver todas →</a>
+                <h2 id="overview-activity-title">Actividad reciente</h2>
               </div>
-              <div class="table-wrap">
-                <table class="overview-detections-table" aria-labelledby="overview-detections-title">
-                  <thead><tr><th>Severidad</th><th>Tipo</th><th>IP origen</th><th>Fecha/hora</th><th>Descripción</th></tr></thead>
-                  <tbody id="overview-detections-body"><tr><td colspan="5" class="state-cell"><span class="spinner"></span> Cargando detecciones…</td></tr></tbody>
-                </table>
+              <div class="activity-block">
+                <div class="activity-heading">
+                  <h3 id="overview-detections-title">Detecciones</h3>
+                  <a class="view-all" href="/dashboard/detections">Ver todas</a>
+                </div>
+                <div class="table-wrap">
+                  <table class="data-table overview-detections-table" aria-labelledby="overview-detections-title">
+                    <thead><tr><th scope="col">Fecha/hora</th><th scope="col">Severidad</th><th scope="col">Tipo</th><th scope="col">IP origen</th></tr></thead>
+                    <tbody id="overview-detections-body"><tr><td colspan="4" class="state-cell"><span class="spinner"></span> Cargando detecciones…</td></tr></tbody>
+                  </table>
+                </div>
+              </div>
+              <div class="activity-block">
+                <div class="activity-heading">
+                  <h3 id="overview-events-title">Eventos</h3>
+                  <a class="view-all" href="/dashboard/events">Ver todos</a>
+                </div>
+                <div class="table-wrap">
+                  <table class="data-table overview-events-table" aria-labelledby="overview-events-title">
+                    <thead><tr><th scope="col">Fecha/hora</th><th scope="col">Severidad</th><th scope="col">Evento</th></tr></thead>
+                    <tbody id="overview-events-body"><tr><td colspan="3" class="state-cell"><span class="spinner"></span> Cargando eventos…</td></tr></tbody>
+                  </table>
+                </div>
               </div>
             </section>
           </div>
@@ -130,16 +203,15 @@
           <section class="module-section" aria-labelledby="events-title">
             <div class="module-heading"><h2 id="events-title">Eventos</h2><span id="events-count" class="panel-count">—</span></div>
             <form id="events-filters" class="filter-bar" action="/dashboard/events" method="get">
-              <label>Servidor<select name="hostname" data-hostname-filter><option value="">Todos permitidos</option></select></label>
-              <label>Severidad<select name="severity"><option value="">Todas</option><option value="critical">Crítica</option><option value="high">Alta</option><option value="medium">Media</option><option value="low">Baja</option></select></label>
+              <label>Severidad<select name="severity"><option value="">Todas</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></label>
               <label>Categoría<input name="category" type="text" autocomplete="off" placeholder="Todas"></label>
               <label>Tipo<input name="event_type" type="text" autocomplete="off" placeholder="Todos"></label>
               <div class="filter-actions"><button type="submit">Aplicar</button><button type="button" data-reset-filters>Limpiar</button></div>
             </form>
             <div class="table-wrap data-table-wrap">
-              <table class="events-table" aria-labelledby="events-title">
-                <thead><tr><th>Fecha/hora</th><th>Severidad</th><th>Categoría</th><th>Tipo</th><th>Descripción</th></tr></thead>
-                <tbody id="events-body"><tr><td colspan="5" class="state-cell"><span class="spinner"></span> Cargando eventos…</td></tr></tbody>
+              <table class="data-table events-table" aria-labelledby="events-title">
+                <thead><tr><th scope="col">Servidor</th><th scope="col">Fecha/hora</th><th scope="col">Severidad</th><th scope="col">Categoría</th><th scope="col">Tipo</th><th scope="col">Descripción</th></tr></thead>
+                <tbody id="events-body"><tr><td colspan="6" class="state-cell"><span class="spinner"></span> Cargando eventos…</td></tr></tbody>
               </table>
             </div>
           </section>
@@ -149,16 +221,79 @@
           <section class="module-section" aria-labelledby="detections-title">
             <div class="module-heading"><h2 id="detections-title">Detecciones</h2><span id="detections-count" class="panel-count">—</span></div>
             <form id="detections-filters" class="filter-bar" action="/dashboard/detections" method="get">
-              <label>Servidor<select name="hostname" data-hostname-filter><option value="">Todos permitidos</option></select></label>
-              <label>Severidad<select name="severity"><option value="">Todas</option><option value="critical">Crítica</option><option value="high">Alta</option><option value="medium">Media</option><option value="low">Baja</option></select></label>
+              <label>Severidad<select name="severity"><option value="">Todas</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></label>
               <label>Tipo<input name="event_type" type="text" autocomplete="off" placeholder="Todos"></label>
               <div class="filter-actions"><button type="submit">Aplicar</button><button type="button" data-reset-filters>Limpiar</button></div>
             </form>
             <div class="table-wrap data-table-wrap">
-              <table class="detections-table" aria-labelledby="detections-title">
-                <thead><tr><th>Severidad</th><th>Tipo</th><th>IP origen</th><th>Fecha/hora</th><th>Descripción</th></tr></thead>
-                <tbody id="detections-body"><tr><td colspan="5" class="state-cell"><span class="spinner"></span> Cargando detecciones…</td></tr></tbody>
+              <table class="data-table detections-table" aria-labelledby="detections-title">
+                <thead><tr><th scope="col">Servidor</th><th scope="col">Severidad</th><th scope="col">Tipo</th><th scope="col">IP origen</th><th scope="col">Fecha/hora</th><th scope="col">Descripción</th></tr></thead>
+                <tbody id="detections-body"><tr><td colspan="6" class="state-cell"><span class="spinner"></span> Cargando detecciones…</td></tr></tbody>
               </table>
+            </div>
+          </section>
+        </div>
+
+        <div class="module-view" data-view="incidents" hidden>
+          <section id="incidents-list-section" class="module-section" aria-labelledby="incidents-title">
+            <div class="module-heading"><h2 id="incidents-title">Incidentes</h2><span id="incidents-count" class="panel-count">—</span></div>
+            <form id="incidents-filters" class="filter-bar incidents-filter-bar" action="/dashboard/incidents" method="get">
+              <label>Severidad<select name="severity"><option value="">Todas</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></label>
+              <label>Estado<select name="status"><option value="">Todos</option><option value="OPEN">Open</option><option value="OBSERVED">Observed</option><option value="CONTAINED">Contained</option><option value="CLOSED">Closed</option></select></label>
+              <label>Tipo<input name="incident_type" type="text" maxlength="128" pattern="[A-Z0-9_]+" autocomplete="off" placeholder="SSH_BRUTE_FORCE_ATTEMPT" title="Código de tipo en mayúsculas, por ejemplo SSH_BRUTE_FORCE_ATTEMPT"></label>
+              <label>Desde<input name="since" type="date"></label>
+              <label>Hasta<input name="until" type="date"></label>
+              <div class="filter-actions"><button type="submit">Aplicar</button><button type="button" data-reset-filters>Limpiar</button></div>
+            </form>
+            <div class="table-wrap data-table-wrap">
+              <table class="data-table incidents-table" aria-labelledby="incidents-title">
+                <thead><tr><th scope="col">ID</th><th scope="col">Severidad</th><th scope="col">Tipo</th><th scope="col">Servidor</th><th scope="col">IP origen</th><th scope="col">Estado</th><th scope="col">Última actividad</th></tr></thead>
+                <tbody id="incidents-body"><tr><td colspan="7" class="state-cell"><span class="spinner"></span> Cargando incidentes…</td></tr></tbody>
+              </table>
+            </div>
+            <nav class="pagination" aria-label="Paginación de incidentes">
+              <button id="incidents-previous" class="table-action" type="button" disabled>← Anterior</button>
+              <span id="incidents-page" class="panel-count">—</span>
+              <button id="incidents-next" class="table-action" type="button" disabled>Siguiente →</button>
+            </nav>
+          </section>
+
+          <section id="incident-detail-section" class="module-section incident-detail" aria-labelledby="incident-detail-title" hidden>
+            <a id="incident-back" class="back-link" href="/dashboard/incidents" data-keep-query="true">← Volver a incidentes</a>
+            <header class="incident-hero">
+              <p id="incident-kicker" class="incident-kicker">Incidente</p>
+              <div class="incident-hero-line">
+                <h2 id="incident-detail-title" class="incident-id">Incidente</h2>
+                <div id="incident-badges" class="badge-row"></div>
+              </div>
+              <dl id="incident-header" class="summary-grid"></dl>
+            </header>
+
+            <section id="incident-actions-section" class="proposal" aria-labelledby="incident-actions-title" hidden>
+              <div class="proposal-heading">
+                <h3 id="incident-actions-title">Respuesta propuesta</h3>
+                <p id="incident-actions-hint" class="proposal-hint">El agente aplicará la acción solo si usted la aprueba y la revalida antes de ejecutarla.</p>
+              </div>
+              <div id="incident-actions-alert" class="inline-alert" role="alert" hidden></div>
+              <div id="incident-actions"></div>
+            </section>
+
+            <div class="incident-columns">
+              <section class="data-panel timeline-panel" aria-labelledby="incident-timeline-title">
+                <div class="panel-heading"><h3 id="incident-timeline-title">Línea de tiempo</h3><span id="incident-timeline-count" class="panel-count">—</span></div>
+                <ol id="incident-timeline" class="timeline" aria-labelledby="incident-timeline-title"></ol>
+              </section>
+              <div class="incident-side">
+                <section class="data-panel" aria-labelledby="incident-decision-title">
+                  <div class="panel-heading"><h3 id="incident-decision-title">Decisión y ejecución</h3></div>
+                  <dl id="incident-response" class="detail-list"></dl>
+                </section>
+                <section class="data-panel" aria-labelledby="incident-evidence-title">
+                  <div class="panel-heading"><h3 id="incident-evidence-title">Evidencia forense</h3><span id="incident-evidence-count" class="panel-count">—</span></div>
+                  <div class="scope-note" role="note">La evidencia se captura y permanece en el servidor del agente. Este panel muestra solo sus metadatos; los archivos no se descargan desde aquí.</div>
+                  <ul id="incident-evidence" class="evidence-list"></ul>
+                </section>
+              </div>
             </div>
           </section>
         </div>
@@ -167,14 +302,13 @@
           <section class="module-section" aria-labelledby="responses-title">
             <div class="module-heading"><h2 id="responses-title">Respuestas</h2><span id="responses-count" class="panel-count">—</span></div>
             <form id="responses-filters" class="filter-bar" action="/dashboard/responses" method="get">
-              <label>Servidor<select name="hostname" data-hostname-filter><option value="">Todos permitidos</option></select></label>
-              <label>Tipo<select name="event_type"><option value="">Todos</option><option value="RESPONSE_DECISION">RESPONSE_DECISION</option><option value="RESPONSE_EXECUTION">RESPONSE_EXECUTION</option></select></label>
+              <label>Tipo<input name="event_type" type="text" maxlength="128" pattern="[A-Z0-9_]+" autocomplete="off" placeholder="Todos"></label>
               <div class="filter-actions"><button type="submit">Aplicar</button><button type="button" data-reset-filters>Limpiar</button></div>
             </form>
             <div class="table-wrap data-table-wrap">
-              <table class="responses-table" aria-labelledby="responses-title">
-                <thead><tr><th>Fecha/hora</th><th>Tipo</th><th>IP objetivo</th><th>Acción</th><th>Estado</th><th>Ejecutado</th><th>Motivo</th></tr></thead>
-                <tbody id="responses-body"><tr><td colspan="7" class="state-cell"><span class="spinner"></span> Cargando respuestas…</td></tr></tbody>
+              <table class="data-table responses-table" aria-labelledby="responses-title">
+                <thead><tr><th scope="col">Servidor</th><th scope="col">Fecha/hora</th><th scope="col">Tipo</th><th scope="col">IP objetivo</th><th scope="col">Acción</th><th scope="col">Estado</th><th scope="col">Ejecutado</th><th scope="col">Motivo</th></tr></thead>
+                <tbody id="responses-body"><tr><td colspan="8" class="state-cell"><span class="spinner"></span> Cargando respuestas…</td></tr></tbody>
               </table>
             </div>
           </section>
@@ -183,19 +317,21 @@
         <div class="module-view" data-view="notifications" hidden>
           <section class="module-section" aria-labelledby="notifications-title">
             <div class="module-heading"><h2 id="notifications-title">Notificaciones</h2><span id="notifications-count" class="panel-count">—</span></div>
-            <div class="metric-grid" aria-live="polite">
+            <div class="scope-note" role="note">
+              Las notificaciones mostradas corresponden al almacenamiento local de este nodo central. La sincronización de notificaciones de agentes remotos aún no está habilitada.
+            </div>
+            <div class="metric-grid notification-metric-grid" aria-live="polite">
               <article class="metric-card"><span>Total</span><strong id="notifications-total" class="metric-value">—</strong></article>
               <article class="metric-card"><span>Enviadas</span><strong id="notifications-sent" class="metric-value">—</strong></article>
               <article class="metric-card"><span>Fallidas</span><strong id="notifications-failed" class="metric-value">—</strong></article>
               <article class="metric-card"><span>Pendientes</span><strong id="notifications-pending" class="metric-value">—</strong></article>
             </div>
             <form id="notifications-filters" class="filter-bar" action="/dashboard/notifications" method="get">
-              <label>Servidor<select name="hostname" data-hostname-filter><option value="">Todos permitidos</option></select></label>
               <label>Estado<select name="status"><option value="">Todos</option><option value="sent">Enviadas</option><option value="failed">Fallidas</option><option value="pending">Pendientes</option></select></label>
-              <label>Severidad<select name="severity"><option value="">Todas</option><option value="critical">Crítica</option><option value="high">Alta</option></select></label>
+              <label>Severidad<select name="severity"><option value="">Todas</option><option value="critical">Critical</option><option value="high">High</option></select></label>
               <div class="filter-actions"><button type="submit">Aplicar</button><button type="button" data-reset-filters>Limpiar</button></div>
             </form>
-            <div class="table-wrap data-table-wrap"><table aria-labelledby="notifications-title"><thead><tr><th>Fecha</th><th>Servidor</th><th>Severidad</th><th>Evento</th><th>Destinatario</th><th>Proveedor</th><th>Estado</th></tr></thead><tbody id="notifications-body"><tr><td colspan="7" class="state-cell">No hay notificaciones registradas.</td></tr></tbody></table></div>
+            <div class="table-wrap data-table-wrap"><table class="data-table notifications-table" aria-labelledby="notifications-title"><thead><tr><th scope="col">Fecha</th><th scope="col">Servidor</th><th scope="col">Severidad</th><th scope="col">Evento</th><th scope="col">Destinatario</th><th scope="col">Proveedor</th><th scope="col">Estado</th></tr></thead><tbody id="notifications-body"><tr><td colspan="7" class="state-cell">No hay notificaciones registradas.</td></tr></tbody></table></div>
           </section>
         </div>
 
@@ -210,8 +346,8 @@
             </form>
             <div id="users-alert" class="inline-alert" role="alert" hidden></div>
             <div class="table-wrap data-table-wrap">
-              <table class="users-table" aria-labelledby="users-title">
-                <thead><tr><th>Usuario</th><th>Rol</th><th>Servidores</th><th>Estado</th><th>Creado</th><th>Acciones</th></tr></thead>
+              <table class="data-table users-table" aria-labelledby="users-title">
+                <thead><tr><th scope="col">Usuario</th><th scope="col">Rol</th><th scope="col">Servidores</th><th scope="col">Estado</th><th scope="col">Creado</th><th scope="col">Acciones</th></tr></thead>
                 <tbody id="users-body"><tr><td colspan="6" class="state-cell"><span class="spinner"></span> Cargando usuarios…</td></tr></tbody>
               </table>
             </div>
@@ -225,11 +361,17 @@
               <button id="connect-server-button" class="primary-action" type="button">Conectar servidor</button>
             </div>
             <div id="servers-alert" class="inline-alert" role="alert" hidden></div>
+            <dl class="servers-summary" aria-label="Resumen de servidores">
+              <div><dt>Total</dt><dd id="servers-total">—</dd></div>
+              <div class="is-online"><dt>En línea</dt><dd id="servers-online">—</dd></div>
+              <div class="is-offline"><dt>Sin conexión</dt><dd id="servers-offline">—</dd></div>
+              <div id="servers-unknown-wrap" class="is-unknown" hidden><dt>Desconocido</dt><dd id="servers-unknown">—</dd></div>
+            </dl>
             <section id="registration-panel" class="registration-panel" aria-labelledby="registration-title" hidden>
               <div class="registration-header">
                 <div>
                   <h3 id="registration-title">Registrar agente</h3>
-                  <p>Ejecuta este comando una vez en el servidor que deseas conectar.</p>
+                  <p>Ejecute este comando una vez en el servidor que desea conectar.</p>
                 </div>
                 <button id="copy-registration-command" class="table-action" type="button">Copiar comando</button>
               </div>
@@ -237,8 +379,8 @@
               <p class="registration-expiry">El token vence en <time id="registration-expires-at">—</time> y solo puede utilizarse una vez.</p>
             </section>
             <div class="table-wrap data-table-wrap">
-              <table class="servers-table" aria-labelledby="servers-title">
-                <thead><tr><th>Agent ID</th><th>Hostname</th><th>Estado</th><th>Último contacto</th><th>Registrado</th></tr></thead>
+              <table class="data-table servers-table" aria-labelledby="servers-title">
+                <thead><tr><th scope="col">Servidor</th><th scope="col">Estado</th><th scope="col">Último contacto</th><th scope="col">Agent ID</th><th scope="col">Registrado</th></tr></thead>
                 <tbody id="servers-body"><tr><td colspan="5" class="state-cell"><span class="spinner"></span> Cargando servidores…</td></tr></tbody>
               </table>
             </div>

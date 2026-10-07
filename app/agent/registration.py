@@ -6,23 +6,105 @@ import platform
 import tempfile
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-DEFAULT_IDENTITY_FILE = Path("/etc/auditoria-system/agent-identity.json")
+from app.core.config import DEFAULT_AGENT_IDENTITY_FILE
+
+DEFAULT_IDENTITY_FILE = DEFAULT_AGENT_IDENTITY_FILE
+MAX_IDENTITY_FILE_BYTES = 16_384
 
 
 class AgentRegistrationError(RuntimeError):
     pass
 
 
-def _central_url(value: str) -> str:
-    normalized = value.rstrip("/")
-    parsed = urlsplit(normalized)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise AgentRegistrationError("La URL central debe usar http o https.")
+class AgentIdentityError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class AgentIdentity:
+    agent_id: str
+    central_url: str
+    credential: str
+
+
+def normalize_central_url(value: str) -> str:
+    normalized = value.strip().rstrip("/")
+    try:
+        parsed = urlsplit(normalized)
+        _ = parsed.port
+    except ValueError as exc:
+        raise AgentIdentityError("La URL central no es válida.") from exc
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.query
+        or parsed.fragment
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise AgentIdentityError("La URL central debe usar http o https.")
     return normalized
+
+
+def central_events_batch_url(central_url: str) -> str:
+    return f"{normalize_central_url(central_url)}/agent/events/batch"
+
+
+def central_heartbeat_url(central_url: str) -> str:
+    return f"{normalize_central_url(central_url)}/agent/heartbeat"
+
+
+def central_response_actions_url(central_url: str) -> str:
+    return f"{normalize_central_url(central_url)}/agent/response-actions"
+
+
+def load_identity(
+    path: Path = DEFAULT_IDENTITY_FILE,
+) -> AgentIdentity | None:
+    if not path.exists():
+        return None
+    if path.is_symlink() or not path.is_file():
+        raise AgentIdentityError("El archivo de identidad no es seguro.")
+    try:
+        file_stat = path.stat()
+        if file_stat.st_size > MAX_IDENTITY_FILE_BYTES:
+            raise AgentIdentityError("El archivo de identidad es demasiado grande.")
+        if os.name != "nt" and file_stat.st_mode & 0o077:
+            raise AgentIdentityError(
+                "El archivo de identidad tiene permisos inseguros."
+            )
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AgentIdentityError("No se pudo leer la identidad del agente.") from exc
+    if not isinstance(raw, dict):
+        raise AgentIdentityError("La identidad del agente no es válida.")
+    agent_id = raw.get("agent_id")
+    central_url = raw.get("central_url")
+    credential = raw.get("credential")
+    if (
+        not isinstance(agent_id, str)
+        or not agent_id.strip()
+        or len(agent_id) > 255
+        or not isinstance(central_url, str)
+        or not isinstance(credential, str)
+        or not credential
+        or len(credential) > 512
+    ):
+        raise AgentIdentityError("La identidad del agente no es válida.")
+    try:
+        normalized_url = normalize_central_url(central_url)
+    except AgentIdentityError as exc:
+        raise AgentIdentityError("La identidad del agente no es válida.") from exc
+    return AgentIdentity(
+        agent_id=agent_id.strip(),
+        central_url=normalized_url,
+        credential=credential,
+    )
 
 
 def _post_json(
@@ -101,7 +183,10 @@ def register_agent(
         raise AgentRegistrationError(
             f"Ya existe una identidad en {identity_file}; no se sobrescribió."
         )
-    central_url = _central_url(server)
+    try:
+        central_url = normalize_central_url(server)
+    except AgentIdentityError as exc:
+        raise AgentRegistrationError(str(exc)) from exc
     enrollment = _post_json(
         f"{central_url}/agent/enroll",
         {

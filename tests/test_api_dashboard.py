@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.main import create_app
+from app.central.config import CentralSettings
 from app.core.config import AgentSettings
 from app.storage.event_repository import EventRepository
 from tests.api_test_helpers import create_test_auth_repository, login_test_user
@@ -14,6 +15,7 @@ def build_client(tmp_path: Path) -> TestClient:
         interval=1,
         state_dir=tmp_path / "state",
         log_dir=tmp_path / "logs",
+        identity_file=tmp_path / "agent-identity.json",
     )
     settings.state_dir.mkdir(parents=True, exist_ok=True)
 
@@ -25,6 +27,9 @@ def build_client(tmp_path: Path) -> TestClient:
             settings=settings,
             repository=repository,
             auth_repository=create_test_auth_repository(tmp_path),
+            central_settings=CentralSettings(
+                database_file=tmp_path / "central" / "central.db"
+            ),
         )
     )
     login_test_user(client)
@@ -41,7 +46,7 @@ def test_dashboard_returns_html(tmp_path: Path) -> None:
     assert "script-src 'self'" in csp
     assert "'unsafe-inline'" not in csp
     assert response.headers["x-content-type-options"] == "nosniff"
-    assert "Auditoria System" in response.text
+    assert "Nexora" in response.text
     assert 'id="events-body"' in response.text
     assert "<script src=" in response.text
     assert "<script>" not in response.text
@@ -65,7 +70,7 @@ def test_dashboard_module_routes_return_shared_shell(
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
-    assert "Auditoria System" in response.text
+    assert "Nexora" in response.text
     assert "/dashboard/assets/styles.css" in response.text
     assert "/dashboard/assets/dashboard.js" in response.text
 
@@ -104,7 +109,7 @@ def test_dashboard_local_assets_are_accessible(tmp_path: Path) -> None:
 
     assert script.status_code == 200
     assert script.headers["content-type"].startswith("text/javascript")
-    assert 'fetchJson("/status")' in script.text
+    assert 'fetchJson(appendAgentParam("/status"), signal)' in script.text
     assert "innerHTML" not in script.text
     assert "eval(" not in script.text
     assert "setInterval" not in script.text
@@ -160,11 +165,11 @@ def test_dashboard_uses_supported_filters_and_overview_limits(tmp_path: Path) ->
     assert 'name="severity"' in html
     assert 'name="category"' in html
     assert 'name="event_type"' in html
-    assert 'name="hostname"' in html
+    assert 'id="agent-selector"' in html
     assert "Mis servidores" in html
     assert "Conectar servidor" in html
-    assert 'fetchJson("/events?limit=5")' in script
-    assert 'fetchJson("/detections?limit=4")' in script
+    assert 'fetchJson(appendAgentParam("/events?limit=5"), signal)' in script
+    assert 'fetchJson(appendAgentParam("/detections?limit=4"), signal)' in script
     assert 'endpointWithFilters("/events"' in script
     assert 'endpointWithFilters("/detections"' in script
     assert 'endpointWithFilters("/responses"' in script
@@ -217,8 +222,8 @@ def test_dashboard_uses_local_assets_and_relative_api_paths(tmp_path: Path) -> N
 
     assert "https://" not in html
     assert "http://" not in html
-    assert 'fetchJson("/health")' in script
-    assert 'fetchJson("/status")' in script
+    assert 'fetchJson("/health", signal)' in script
+    assert 'fetchJson(appendAgentParam("/status"), signal)' in script
     assert "textContent" in script
 
 

@@ -23,6 +23,41 @@ def test_event_generates_uuid_and_timestamp() -> None:
     assert event.severity == "medium"
 
 
+def test_legacy_event_without_agent_id_serializes_and_deserializes() -> None:
+    event = SecurityEvent(
+        hostname="legacy-server",
+        source="continuous-agent",
+        category="system",
+        event_type="AGENT_STARTED",
+        severity="low",
+        description="Evento legacy",
+    )
+
+    serialized = event.model_dump(mode="json")
+    restored = SecurityEvent.model_validate(serialized)
+
+    assert serialized["agent_id"] is None
+    assert restored == event
+
+
+def test_event_with_agent_id_serializes_and_deserializes() -> None:
+    event = SecurityEvent(
+        agent_id="agt_stable-identity",
+        hostname="renamed-server",
+        source="continuous-agent",
+        category="detection",
+        event_type="SSH_BRUTE_FORCE_ATTEMPT",
+        severity="high",
+        description="Detección asociada al agente",
+    )
+
+    serialized = event.model_dump(mode="json")
+    restored = SecurityEvent.model_validate(serialized)
+
+    assert serialized["agent_id"] == "agt_stable-identity"
+    assert restored.agent_id == "agt_stable-identity"
+
+
 def test_event_rejects_unknown_severity() -> None:
     with pytest.raises(ValidationError):
         SecurityEvent(

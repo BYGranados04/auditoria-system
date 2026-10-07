@@ -8,6 +8,7 @@ from typing import Any
 from app.response.firewall import (
     NftablesFirewallPlanner,
     TemporaryBlockPlan,
+    TemporaryPortBlockPlan,
 )
 from app.response.firewall_backend import (
     NftablesFirewallBackend,
@@ -70,7 +71,7 @@ class ResponseRecoveryManager:
         block: dict[str, Any],
         *,
         now: datetime,
-    ) -> TemporaryBlockPlan:
+    ) -> TemporaryBlockPlan | TemporaryPortBlockPlan:
         expires_at = self._parse_timestamp(block["expires_at"])
 
         remaining_seconds = ceil((expires_at - now).total_seconds())
@@ -88,10 +89,23 @@ class ResponseRecoveryManager:
             remaining_seconds,
         )
 
-        plan = self.planner.plan_temporary_block(
-            block["target_ip"],
-            validation_duration,
-        )
+        action = block.get("action") or "TEMPORARY_BLOCK_IP"
+
+        plan: TemporaryBlockPlan | TemporaryPortBlockPlan
+        if action == "TEMPORARY_BLOCK_IP_PORT":
+            plan = self.planner.plan_temporary_port_block(
+                block["target_ip"],
+                str(block.get("protocol")),
+                block.get("port"),  # type: ignore[arg-type]
+                validation_duration,
+            )
+        elif action == "TEMPORARY_BLOCK_IP":
+            plan = self.planner.plan_temporary_block(
+                block["target_ip"],
+                validation_duration,
+            )
+        else:
+            raise ValueError("La acción almacenada del bloqueo no es soportada.")
 
         stored_family = block.get("family")
 
@@ -128,6 +142,17 @@ class ResponseRecoveryManager:
 
         if active_blocks:
             table_created = self.backend.prepare()
+
+        if any(
+            block.get("action") == "TEMPORARY_BLOCK_IP_PORT"
+            for block in active_blocks
+        ):
+            # Si falla, cada bloqueo por puerto se marcará FAILED más abajo
+            # porque add_temporary_block no encontrará su set.
+            try:
+                self.backend.prepare_port_blocking()
+            except Exception:
+                pass
 
         restored_count = 0
         failed_restore_count = 0

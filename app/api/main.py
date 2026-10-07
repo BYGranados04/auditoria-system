@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import platform
 import sqlite3
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -11,10 +10,15 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict
 
+from app.agents.events import build_agent_event_router
 from app.agents.web import build_agent_router
+from app.api.incidents import build_incident_router
 from app.auth.config import AuthSettings, load_auth_settings
 from app.auth.repository import AuthenticatedSession, AuthRepository
 from app.auth.web import AuthManager, build_auth_router
+from app.central.config import CentralSettings, load_central_settings
+from app.central.incidents import CentralIncidentReader, CentralResponseActionStore
+from app.central.repository import CentralEventRepository
 from app.core.config import AgentSettings, load_agent_settings
 from app.notifications.repository import NotificationRepository
 from app.notifications.web import build_notification_router
@@ -25,11 +29,6 @@ Severity = Literal[
     "medium",
     "high",
     "critical",
-]
-
-ResponseEventType = Literal[
-    "RESPONSE_DECISION",
-    "RESPONSE_EXECUTION",
 ]
 
 DASHBOARD_DIRECTORY = Path(__file__).with_name("dashboard")
@@ -66,19 +65,23 @@ class StatusResponse(BaseModel):
 
     status: str
     service: str
+    agent_id: str | None
     hostname: str
+    presence: Literal["unknown", "online", "offline"] | None
+    last_seen_at: datetime | None
 
-    response_mode: str
-    automatic_blocking_enabled: bool
+    response_mode: str | None
+    automatic_blocking_enabled: bool | None
 
     total_events: int
-    live_response_blocks: int
+    live_response_blocks: int | None
     by_severity: dict[str, int]
 
 
 class EventResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    agent_id: str
     event_id: str
     timestamp: datetime
     hostname: str
@@ -111,14 +114,12 @@ def create_app(
     repository: EventRepository | None = None,
     auth_settings: AuthSettings | None = None,
     auth_repository: AuthRepository | None = None,
+    central_settings: CentralSettings | None = None,
+    central_repository: CentralEventRepository | None = None,
     clock: Callable[[], datetime] | None = None,
 ) -> FastAPI:
     resolved_settings = settings or load_agent_settings()
 
-    resolved_repository = repository or EventRepository(
-        resolved_settings.database_file,
-        read_only=True,
-    )
     resolved_auth_settings = auth_settings or load_auth_settings()
     resolved_auth_repository = auth_repository or AuthRepository(
         resolved_auth_settings.database_file
@@ -128,14 +129,36 @@ def create_app(
         resolved_auth_settings,
         clock=clock,
     )
+    resolved_central_settings = central_settings or load_central_settings()
+    resolved_central_repository = central_repository or CentralEventRepository(
+        resolved_central_settings.database_file,
+        clock=auth_manager.clock,
+    )
 
     application = FastAPI(
-        title="Auditoria System API",
-        description=("API local de consulta para Auditoria System."),
-        version="0.8.0",
+        title="Nexora API",
+        description=(
+            "API local de consulta de Nexora. "
+            "Monitoreo y seguridad de tu infraestructura."
+        ),
+        version="1.0.0",
     )
     application.include_router(build_auth_router(auth_manager))
     application.include_router(build_agent_router(auth_manager))
+    application.include_router(
+        build_agent_event_router(
+            auth_manager,
+            resolved_central_repository,
+            resolved_central_settings,
+        )
+    )
+    application.include_router(
+        build_incident_router(
+            auth_manager,
+            CentralIncidentReader(resolved_central_settings.database_file),
+            CentralResponseActionStore(resolved_central_settings.database_file),
+        )
+    )
     application.include_router(
         build_notification_router(
             auth_manager,
@@ -172,6 +195,11 @@ def create_app(
     )
     @application.get(
         "/dashboard/servers",
+        include_in_schema=False,
+        response_class=FileResponse,
+    )
+    @application.get(
+        "/dashboard/incidents",
         include_in_schema=False,
         response_class=FileResponse,
     )
@@ -257,52 +285,51 @@ def create_app(
         tags=["system"],
     )
     def system_status(
+        agent_id: str | None = None,
         session: AuthenticatedSession = Depends(  # noqa: B008
             auth_manager.require_authenticated
         ),
     ) -> StatusResponse:
-        if not resolved_settings.database_file.is_file():
-            raise HTTPException(
-                status_code=503,
-                detail="Base de datos no disponible.",
-            )
-
         try:
-            allowed_hostnames = auth_manager.get_allowed_hostnames(session)
-            statistics = resolved_repository.statistics(hostnames=allowed_hostnames)
-
-            live_blocks = resolved_repository.list_live_response_blocks(
-                now=datetime.now(UTC),
-                hostnames=allowed_hostnames,
+            allowed_agent_ids = auth_manager.resolve_agent_scope(session, agent_id)
+            statistics = resolved_central_repository.statistics(
+                agent_ids=allowed_agent_ids
             )
+            owner_user_id = None if session.role == "superadmin" else session.user_id
+            agents = resolved_auth_repository.list_agents(
+                owner_user_id=owner_user_id,
+                now=auth_manager.clock(),
+                offline_after_seconds=(
+                    resolved_auth_settings.agent_offline_after_seconds
+                ),
+            )
+            if agent_id is not None:
+                agents = [item for item in agents if item["agent_id"] == agent_id]
         except sqlite3.Error as exc:
             raise HTTPException(
                 status_code=503,
                 detail="Base de datos no disponible.",
             ) from exc
 
-        automatic_blocking_enabled = (
-            resolved_settings.response_mode == "automatic"
-            and resolved_settings.allow_temporary_ip_block
-        )
-
-        if allowed_hostnames is None:
-            status_hostname = platform.node()
-        elif len(allowed_hostnames) == 1:
-            status_hostname = allowed_hostnames[0]
-        elif allowed_hostnames:
-            status_hostname = f"{len(allowed_hostnames)} servidores"
+        selected = agents[0] if len(agents) == 1 else None
+        if selected is not None:
+            status_hostname = str(selected["hostname"])
+        elif agents:
+            status_hostname = f"{len(agents)} servidores"
         else:
             status_hostname = "Sin servidores asignados"
 
         return StatusResponse(
             status="ok",
             service="auditoria-system-api",
+            agent_id=str(selected["agent_id"]) if selected is not None else None,
             hostname=status_hostname,
-            response_mode=(resolved_settings.response_mode),
-            automatic_blocking_enabled=(automatic_blocking_enabled),
+            presence=(str(selected["presence"]) if selected is not None else None),
+            last_seen_at=(selected["last_seen_at"] if selected is not None else None),
+            response_mode=None,
+            automatic_blocking_enabled=None,
             total_events=statistics["total"],
-            live_response_blocks=len(live_blocks),
+            live_response_blocks=None,
             by_severity=statistics["by_severity"],
         )
 
@@ -312,6 +339,7 @@ def create_app(
         tags=["events"],
     )
     def list_events(
+        agent_id: str | None = None,
         severity: Severity | None = None,
         event_type: str | None = None,
         hostname: str | None = None,
@@ -342,22 +370,14 @@ def create_app(
                 detail=("since no puede ser posterior a until."),
             )
 
-        if not resolved_settings.database_file.is_file():
-            raise HTTPException(
-                status_code=503,
-                detail="Base de datos no disponible.",
-            )
-
         try:
-            allowed_hostnames = auth_manager.resolve_hostname_scope(
-                session,
-                hostname,
-            )
-            rows = resolved_repository.list_events(
+            allowed_agent_ids = auth_manager.resolve_agent_scope(session, agent_id)
+            rows = resolved_central_repository.list_events(
+                agent_ids=allowed_agent_ids,
+                agent_id=agent_id,
                 severity=severity,
                 event_type=event_type,
                 hostname=hostname,
-                hostnames=allowed_hostnames,
                 category=category,
                 since=since,
                 until=until,
@@ -371,8 +391,9 @@ def create_app(
 
         return [
             EventResponse(
+                agent_id=row["agent_id"],
                 event_id=row["event_id"],
-                timestamp=row["timestamp"],
+                timestamp=row["occurred_at"],
                 hostname=row["hostname"],
                 source=row["source"],
                 category=row["category"],
@@ -390,6 +411,7 @@ def create_app(
         tags=["detections"],
     )
     def list_detections(
+        agent_id: str | None = None,
         severity: Severity | None = None,
         event_type: str | None = None,
         hostname: str | None = None,
@@ -419,22 +441,14 @@ def create_app(
                 detail=("since no puede ser posterior a until."),
             )
 
-        if not resolved_settings.database_file.is_file():
-            raise HTTPException(
-                status_code=503,
-                detail="Base de datos no disponible.",
-            )
-
         try:
-            allowed_hostnames = auth_manager.resolve_hostname_scope(
-                session,
-                hostname,
-            )
-            rows = resolved_repository.list_events(
+            allowed_agent_ids = auth_manager.resolve_agent_scope(session, agent_id)
+            rows = resolved_central_repository.list_events(
+                agent_ids=allowed_agent_ids,
+                agent_id=agent_id,
                 severity=severity,
                 event_type=event_type,
                 hostname=hostname,
-                hostnames=allowed_hostnames,
                 category="detection",
                 since=since,
                 until=until,
@@ -448,8 +462,9 @@ def create_app(
 
         return [
             EventResponse(
+                agent_id=row["agent_id"],
                 event_id=row["event_id"],
-                timestamp=row["timestamp"],
+                timestamp=row["occurred_at"],
                 hostname=row["hostname"],
                 source=row["source"],
                 category=row["category"],
@@ -467,7 +482,13 @@ def create_app(
         tags=["responses"],
     )
     def list_responses(
-        event_type: ResponseEventType | None = None,
+        agent_id: str | None = None,
+        event_type: str | None = Query(
+            default=None,
+            min_length=1,
+            max_length=128,
+            pattern=r"^[A-Z0-9_]+$",
+        ),
         hostname: str | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
@@ -495,40 +516,18 @@ def create_app(
                 detail=("since no puede ser posterior a until."),
             )
 
-        if not resolved_settings.database_file.is_file():
-            raise HTTPException(
-                status_code=503,
-                detail="Base de datos no disponible.",
-            )
-
         try:
-            allowed_hostnames = auth_manager.resolve_hostname_scope(
-                session,
-                hostname,
+            allowed_agent_ids = auth_manager.resolve_agent_scope(session, agent_id)
+            rows = resolved_central_repository.list_events(
+                agent_ids=allowed_agent_ids,
+                agent_id=agent_id,
+                event_type=event_type,
+                hostname=hostname,
+                category="response",
+                since=since,
+                until=until,
+                limit=limit,
             )
-            if event_type is None:
-                rows = resolved_repository.list_events(
-                    event_types=(
-                        "RESPONSE_DECISION",
-                        "RESPONSE_EXECUTION",
-                    ),
-                    hostname=hostname,
-                    hostnames=allowed_hostnames,
-                    category="response",
-                    since=since,
-                    until=until,
-                    limit=limit,
-                )
-            else:
-                rows = resolved_repository.list_events(
-                    event_type=event_type,
-                    hostname=hostname,
-                    hostnames=allowed_hostnames,
-                    category="response",
-                    since=since,
-                    until=until,
-                    limit=limit,
-                )
         except sqlite3.Error as exc:
             raise HTTPException(
                 status_code=503,
@@ -537,8 +536,9 @@ def create_app(
 
         return [
             EventResponse(
+                agent_id=row["agent_id"],
                 event_id=row["event_id"],
-                timestamp=row["timestamp"],
+                timestamp=row["occurred_at"],
                 hostname=row["hostname"],
                 source=row["source"],
                 category=row["category"],

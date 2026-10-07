@@ -1,14 +1,26 @@
+from pathlib import Path
 from typing import Any
 
 from app.agent.continuous_agent import ContinuousAgent
+from app.core.config import AgentSettings
 
 
 def prepare_agent(
+    tmp_path: Path,
     monkeypatch,
     previous: dict[str, Any],
     current: dict[str, Any],
 ):
-    agent = ContinuousAgent(interval=1)
+    # Rutas aisladas: nunca tocar /var/lib/auditoria-system del host.
+    agent = ContinuousAgent(
+        interval=1,
+        settings=AgentSettings(
+            interval=1,
+            state_dir=tmp_path / "state",
+            log_dir=tmp_path / "logs",
+            identity_file=tmp_path / "agent-identity.json",
+        ),
+    )
 
     monkeypatch.setattr(
         agent.ssh_collector,
@@ -49,7 +61,7 @@ def prepare_agent(
     return agent, events, saved, comparisons
 
 
-def test_reboot_skips_state_comparison(monkeypatch) -> None:
+def test_reboot_skips_state_comparison(tmp_path: Path, monkeypatch) -> None:
     previous = {
         "boot_id": "boot-anterior",
         "listening_ports": ["tcp:127.0.0.1:8000"],
@@ -61,6 +73,7 @@ def test_reboot_skips_state_comparison(monkeypatch) -> None:
     }
 
     agent, events, saved, comparisons = prepare_agent(
+        tmp_path,
         monkeypatch,
         previous,
         current,
@@ -74,7 +87,7 @@ def test_reboot_skips_state_comparison(monkeypatch) -> None:
     assert events[0]["severity"] == "low"
 
 
-def test_legacy_baseline_is_migrated(monkeypatch) -> None:
+def test_legacy_baseline_is_migrated(tmp_path: Path, monkeypatch) -> None:
     previous = {
         "listening_ports": ["tcp:0.0.0.0:22"],
     }
@@ -85,6 +98,7 @@ def test_legacy_baseline_is_migrated(monkeypatch) -> None:
     }
 
     agent, events, saved, comparisons = prepare_agent(
+        tmp_path,
         monkeypatch,
         previous,
         current,
@@ -97,7 +111,7 @@ def test_legacy_baseline_is_migrated(monkeypatch) -> None:
     assert events[0]["event_type"] == "BASELINE_MIGRATED"
 
 
-def test_same_boot_compares_states(monkeypatch) -> None:
+def test_same_boot_compares_states(tmp_path: Path, monkeypatch) -> None:
     previous = {
         "boot_id": "mismo-boot",
         "listening_ports": [],
@@ -109,6 +123,7 @@ def test_same_boot_compares_states(monkeypatch) -> None:
     }
 
     agent, events, saved, comparisons = prepare_agent(
+        tmp_path,
         monkeypatch,
         previous,
         current,
