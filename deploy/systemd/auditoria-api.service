@@ -1,5 +1,5 @@
 [Unit]
-Description=Auditoria System - API local de consulta
+Description=Nexora - API local de consulta
 Documentation=https://github.com/BYGranados04/auditoria-system
 After=network.target
 

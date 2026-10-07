@@ -1,5 +1,5 @@
 [Unit]
-Description=Auditoria System - Agente de monitoreo de seguridad
+Description=Nexora - Agente de monitoreo de seguridad
 Documentation=https://github.com/BYGranados04/auditoria-system
 Wants=network-online.target
 After=network-online.target
