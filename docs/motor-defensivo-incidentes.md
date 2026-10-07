@@ -1,9 +1,13 @@
 # Motor defensivo: incidentes, evidencia forense, bloqueo IP+puerto y reincidencia
 
-Este documento describe las capacidades agregadas sobre la rama de
-estabilización de v1.0. Todas son compatibles hacia atrás: una instalación
-existente sin las variables nuevas conserva exactamente el comportamiento
-anterior (incluido `TEMPORARY_BLOCK_IP` con su duración histórica).
+Este documento describe el diseño del motor defensivo de Nexora v1.0.0. Todas
+sus capacidades son compatibles hacia atrás: una instalación existente sin las
+variables nuevas conserva el comportamiento anterior (incluido
+`TEMPORARY_BLOCK_IP` con su duración histórica).
+
+Para la operación diaria, consulte
+[respuesta-defensiva.md](respuesta-defensiva.md) e
+[incidentes-y-evidencia.md](incidentes-y-evidencia.md).
 
 ## 1. Conceptos
 
@@ -12,13 +16,15 @@ anterior (incluido `TEMPORARY_BLOCK_IP` con su duración histórica).
 | **Event** | Hecho observado y normalizado (`SecurityEvent`). | `auditoria.db` → outbox → `central.db` | `SSH_INVALID_USER` |
 | **Detection** | Evento de categoría `detection` producido por la correlación a partir de varios eventos. | Igual que Event | `SSH_USER_ENUMERATION_ATTEMPT` |
 | **Incident** | Agrupación de eventos, detecciones, evidencia y respuestas de un mismo origen en un servidor. Guarda **referencias**, no copias. | Agente: tabla `incidents`; central: `incidents` + `incident_links` | `INC-3F9A12C07B44E1D2` |
-| **Response Decision** | Resultado del `ResponsePolicyEngine` para una detección (`RESPONSE_DECISION`). Indica acción, objetivo, duración, reincidencia y motivo. | Evento `response` | `TEMPORARY_BLOCK_IP_PORT 192.168.1.50 tcp/22 600 s` |
-| **Response Execution** | Resultado del `ResponseExecutor` sobre la decisión (`RESPONSE_EXECUTION`): `SKIPPED`, `DRY_RUN`, `EXECUTED` o `FAILED`. | Evento `response` + `response_blocks` | `EXECUTED` |
+| **Response Decision** | Resultado del `ResponsePolicyEngine` para una detección (`RESPONSE_DECISION`). Indica acción, objetivo, duración, reincidencia y motivo. | Evento `response` | `TEMPORARY_BLOCK_IP_PORT 203.0.113.50 tcp/22 600 s` |
+| **Response Execution** | Resultado del `ResponseExecutor` sobre la decisión (`RESPONSE_EXECUTION`): `SKIPPED`, `EXECUTED` o `FAILED`. `DRY_RUN` existe en el modelo, pero no se produce en el flujo normal de v1.0.0. | Evento `response` + `response_blocks` | `EXECUTED` |
 
 Flujo para las detecciones SSH (`SSH_USER_ENUMERATION_ATTEMPT`,
 `SSH_BRUTE_FORCE_ATTEMPT`, `SSH_REPEATED_PREAUTH_ACTIVITY`):
 
 ```text
+(inicio del ciclo) reconciliación de response_blocks vencidos (QA-01, solo SQLite)
+
 journald → SSH_* (event) → correlación → detection
         → incidente (crear/actualizar)            INCIDENT_OPENED / INCIDENT_UPDATED
         → evidencia mínima rápida (psutil, sin subprocesos, solo HIGH/CRITICAL)
@@ -26,23 +32,37 @@ journald → SSH_* (event) → correlación → detection
         → ResponsePolicyEngine (Response Decision) RESPONSE_DECISION
         → [assisted] solicitud de aprobación       RESPONSE_APPROVAL_REQUESTED
         → ResponseExecutor + Protection Validation RESPONSE_EXECUTION
+        → registro de ofensa (si corresponde)
+        → encolado de la captura forense ampliada
         → incidente actualizado con vínculos        INCIDENT_UPDATED
-        → (fin del lote) captura forense ampliada   FORENSIC_EVIDENCE_CAPTURED
-        → (ciclo siguiente) aprobaciones humanas    RESPONSE_EXECUTION / RESPONSE_REJECTION_APPLIED
+
+(fin del ciclo, en este orden)
+        → cierre de incidentes inactivos            INCIDENT_UPDATED (CLOSED)
+        → aprobaciones humanas ya decididas         RESPONSE_EXECUTION / RESPONSE_REJECTION_APPLIED / RESPONSE_APPROVAL_EXPIRED
+        → capturas forenses ampliadas (máx. 3)      FORENSIC_EVIDENCE_CAPTURED / FORENSIC_EVIDENCE_FAILED
 ```
 
-Separación de capas: el motor decide qué haría la política (por ejemplo
-`TEMPORARY_BLOCK_IP_PORT`); la validación de protecciones (Tailscale, trusted
-admin, sesiones SSH activas, IPs locales, gateways) ocurre en el ejecutor, que
-registra `SKIPPED` con `protection_rejected=true` y el motivo. Así queda
-demostrado qué quiso hacer el motor y por qué no se ejecutó. Las únicas guardas
-que permanecen en el motor son las históricas de v1.0 (loopback, unspecified,
-multicast, link-local y trusted admin IPs → `NO_ACTION`).
+Separación de capas:
+
+| Capa | Componente | Qué valida | Resultado si protege |
+|---|---|---|---|
+| Detección | `app/detection/` | Umbrales de correlación SSH | — |
+| Decisión | `ResponsePolicyEngine` | Tipo de detección elegible, `source_ip` válida, loopback, no especificada, multicast, link-local y `AUDITORIA_TRUSTED_ADMIN_IPS` | `NO_ACTION` |
+| Ejecución | `ResponseExecutor` + planificador nftables | Vuelve a validar las anteriores; además Tailscale (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`), sesiones SSH activas, IPs locales y gateways | `SKIPPED` con `protection_rejected=true` |
+| nftables | Reglas de la tabla | Tráfico por `lo` y `tailscale0` | `return` (nunca se descarta) |
+
+Tailscale, sesión SSH, IP local y gateway **no** se evalúan en la decisión: la
+decisión conserva la acción propuesta y la ejecución registra por qué no se
+aplicó. Las protecciones dinámicas (sesión SSH, IP local, gateway) se resuelven
+en el momento de ejecutar; si `psutil` no puede leer conexiones o interfaces,
+esa categoría queda vacía (*fail-open*). Las decisiones `RECOMMEND_*`
+(`audit_only` y `assisted` antes de aprobar) no pasan por las protecciones de
+ejecución porque no son acciones ejecutables.
 
 Los umbrales de los detectores no cambiaron. El agente sigue siendo el único
-componente con operaciones privilegiadas; la API central solo lee/escribe
-`central.db` y nunca accede a `auditoria.db` ni al sistema de archivos del
-agente.
+componente con operaciones privilegiadas. La API central lee y escribe
+`central.db` y `auth.db`, lee `notifications.db` en solo lectura y nunca accede a
+`auditoria.db` ni a la evidencia del agente.
 
 ## 2. Incidentes
 
@@ -54,10 +74,16 @@ agente.
 - **Estados**:
   - `OPEN`: requiere atención (aprobación pendiente en `assisted`, ejecución
     fallida o acción no autorizada en `automatic`).
-  - `OBSERVED`: registrado sin contención (`audit_only`, dry-run o IP protegida).
+  - `OBSERVED`: registrado sin contención (`audit_only`, IP protegida,
+    rechazo, vencimiento u omisión).
   - `CONTAINED`: el bloqueo temporal fue aplicado.
   - `CLOSED`: sin actividad durante la ventana de agrupación. El agente cierra
-    incidentes inactivos en cada ciclo y antes de abrir uno nuevo.
+    incidentes inactivos en cada ciclo y antes de abrir uno nuevo. El cierre
+    alcanza a **cualquier** incidente no cerrado: también a los `CONTAINED`
+    (aunque el bloqueo siga vigente en nftables) y a los `OPEN` con una
+    aprobación pendiente. Si esa aprobación se resuelve después del cierre, el
+    agente vuelve a fijar `CONTAINED` u `OBSERVED`, y el siguiente cierre por
+    inactividad lo devuelve a `CLOSED`.
 - **Timeline**: los eventos `INCIDENT_*` llevan una lista `links` con
   `{event_id, kind, occurred_at}` (`kind`: `event`, `detection`, `decision`,
   `approval`, `execution`, `evidence`). El central la proyecta en `incident_links` y arma la
@@ -97,10 +123,18 @@ La captura se divide en dos fases para no retrasar la contención:
 2. **Captura ampliada** (después de contener): se encola en la tabla
    `forensic_capture_queue` de `auditoria.db` y se procesa al final del ciclo del
    agente, en el mismo hilo (sin threads ni procesos nuevos, sin competir con el
-   ejecutor ni con SQLite). Máximo 3 capturas por ciclo; lo pendiente sobrevive
-   reinicios. Cada captura se reintenta hasta 3 veces y luego se informa
-   `FORENSIC_EVIDENCE_FAILED`. La evidencia mínima se escribe como
-   `quick_snapshot.json` dentro de la captura ampliada.
+   ejecutor ni con SQLite), después de procesar las aprobaciones. Máximo 3
+   capturas por ciclo; lo pendiente sobrevive reinicios. Reintentos:
+   - un error inesperado deja la captura `PENDING` para un ciclo posterior,
+     hasta 3 intentos en total; al agotarlos queda `FAILED` y se emite
+     `FORENSIC_EVIDENCE_FAILED`;
+   - un `ForensicEvidenceError` (por ejemplo, ruta de evidencia insegura) la
+     deja `FAILED` de inmediato, sin reintento, y emite
+     `FORENSIC_EVIDENCE_FAILED`;
+   - si la captura de esa detección ya existe, se marca `DONE`.
+
+   La evidencia mínima se escribe como `quick_snapshot.json` dentro de la
+   captura ampliada.
 
 Así, ninguna contención espera por comandos forensos: todas las detecciones del
 lote se deciden y ejecutan antes de la primera captura ampliada.
@@ -132,8 +166,9 @@ Garantías:
   `O_EXCL|O_NOFOLLOW`; escritura en `.tmp-<uuid>` y renombrado atómico; se
   rechaza un directorio base que sea enlace simbólico;
 - nunca se leen `agent.env`, `agent-identity.json`, claves ni el entorno;
-- sanitización de secretos evidentes (`password=`, `token:`, `Bearer …`,
-  `--password …`, bloques `PRIVATE KEY`);
+- sanitización por patrones de secretos evidentes (`password=`, `token:`,
+  `Bearer …`, `--password …`, credenciales en URLs, bloques `PRIVATE KEY`); no
+  garantiza eliminar todo dato sensible;
 - límite por captura (`AUDITORIA_EVIDENCE_MAX_BYTES`) y por artefacto (128 KiB);
   los artefactos que no caben se marcan `truncated`/`skipped`;
 - errores parciales (`unavailable`, `error`) no abortan la captura; el estado
@@ -150,7 +185,7 @@ el agente; para revisarlo se accede al servidor con privilegios de root.
 ## 4. `TEMPORARY_BLOCK_IP_PORT`
 
 Bloquea temporalmente solo el tráfico `IP → protocolo/puerto` (por ejemplo
-`192.168.1.50 → tcp/22`), sin afectar el resto del tráfico de esa IP.
+`203.0.113.50 → tcp/22`), sin afectar el resto del tráfico de esa IP.
 
 Estructuras nftables (en la tabla existente `inet auditoria_response`):
 
@@ -175,17 +210,19 @@ chain input_port {
   una transacción `nft -f` validada antes con `--check`. Reaplicarlo no duplica
   reglas ni toca `blocked_ipv4`, `blocked_ipv6` ni la cadena `input`.
 - Elemento: `add element inet auditoria_response blocked_ipv4_port
-  { 192.168.1.50 . tcp . 22 timeout 120s }`. El kernel lo expira solo; la base
-  lo marca `EXPIRED` lógicamente y la recuperación tras reinicio lo restaura con
-  el tiempo restante.
-- Todas las protecciones aplican igual que en `TEMPORARY_BLOCK_IP` (el planner
-  reutiliza `plan_temporary_block`): loopback, unspecified, multicast,
-  link-local, Tailscale `100.64.0.0/10` y `fd7a:115c:a1e0::/48`, trusted admin
-  IPs, sesiones SSH establecidas (también en `AUDITORIA_SSH_PORT` si no es 22),
-  IPs locales y gateways. Todas se validan en la capa de ejecución: la decisión
-  conserva la acción propuesta y la ejecución queda `SKIPPED` con
-  `protection_rejected=true`. Las direcciones protegidas no generan ofensas de
-  reincidencia.
+  { 203.0.113.50 . tcp . 22 timeout 120s }`. El kernel lo expira solo. En SQLite
+  el registro pasa de `ACTIVE`/`PENDING` a `EXPIRED` en la reconciliación al
+  inicio de cada ciclo del agente (QA-01), antes de cada bloqueo nuevo y en la
+  recuperación de arranque. La recuperación tras reinicio restaura los bloqueos
+  todavía vigentes con el tiempo restante.
+- Las protecciones son las mismas que en `TEMPORARY_BLOCK_IP` (el planner
+  reutiliza `plan_temporary_block`), con la separación de capas de la sección
+  1: loopback, unspecified, multicast, link-local y trusted admin IPs se
+  descartan ya en la decisión (`NO_ACTION`) y se revalidan al ejecutar;
+  Tailscale `100.64.0.0/10` y `fd7a:115c:a1e0::/48`, sesiones SSH establecidas
+  (también en `AUDITORIA_SSH_PORT` si no es 22), IPs locales y gateways se
+  validan solo en la ejecución, que queda `SKIPPED` con
+  `protection_rejected=true`.
 - Idempotencia de ejecución: si ya existe un bloqueo vigente equivalente
   (mismo host, IP, acción, protocolo y puerto), la ejecución devuelve `SKIPPED`
   con el motivo en lugar de `FAILED`; el incidente sigue `CONTAINED` y no se
@@ -199,9 +236,12 @@ La decisión y la ejecución registran `action`, `target_ip`, `protocol`, `port`
 
 ## 5. Reincidencia
 
-- **Ofensa**: detección candidata a bloqueo cuya decisión no fue `NO_ACTION` y
-  que no fue rechazada por protección. Se guarda en `response_offenses`
-  (`auditoria.db`), por lo que sobrevive reinicios.
+- **Ofensa**: detección candidata a bloqueo cuya decisión no fue `NO_ACTION`,
+  que no fue rechazada por protección en la ejecución, cuya IP no tiene
+  protección estática (por ejemplo, Tailscale) y que no terminó en `SKIPPED`
+  siendo una acción `TEMPORARY_*` (por ejemplo, por un bloqueo vigente
+  equivalente). Se guarda en `response_offenses` (`auditoria.db`), por lo que
+  sobrevive reinicios.
 - **Nivel**: `1 + ofensas previas del mismo origen en el mismo servidor dentro
   de la ventana deslizante` (`AUDITORIA_RESPONSE_ESCALATION_WINDOW_SECONDS`, por
   defecto 86400 s), acotado al número de niveles.
@@ -209,8 +249,12 @@ La decisión y la ejecución registran `action`, `target_ip`, `protocol`, `port`
   `120,600,3600`). Cada nivel está entre 60 y 86400 s y la lista es no
   decreciente (máximo 10 niveles): nunca hay bloqueo infinito.
 - **Regreso a nivel 1**: cuando no hay ofensas del origen dentro de la ventana.
-- **Direcciones protegidas**: no generan decisión de bloqueo y no se registran
-  como ofensa.
+- **Direcciones protegidas**: las de la capa de decisión (loopback, etc., y
+  trusted admin) generan `NO_ACTION`; las de protección estática (Tailscale) y
+  las rechazadas por protección en la ejecución no se registran como ofensa.
+  En `audit_only` y `assisted`, una decisión `RECOMMEND_*` sí cuenta como
+  ofensa, y las protecciones dinámicas (sesión SSH, IP local, gateway) no se
+  evalúan en ese momento.
 - Con `AUDITORIA_RESPONSE_ESCALATION_ENABLED=false` (defecto) la duración es la
   histórica `AUDITORIA_TEMPORARY_BLOCK_SECONDS`; el nivel se informa igualmente.
 
@@ -222,7 +266,7 @@ escalamiento está activo.
 
 | Modo | Incidente | Evidencia | Decisión | Firewall |
 |---|---|---|---|---|
-| `audit_only` | sí (`OBSERVED`) | sí, si está habilitada | `RECOMMEND_BLOCK_IP[_PORT]` | nunca (ejecutor en dry-run) |
+| `audit_only` | sí (`OBSERVED`) | sí, si está habilitada | `RECOMMEND_BLOCK_IP[_PORT]` | nunca; la ejecución registra `SKIPPED` («no requiere una acción ejecutable») |
 | `assisted` | sí (`OPEN` → `CONTAINED`/`OBSERVED`) | sí | `RECOMMEND_…` con `approval_required=true` y `proposed_action`; queda `PENDING_APPROVAL` | solo tras aprobación de un superadmin, revalidada por el agente (ver sección 6.1) |
 | `automatic` | sí (`CONTAINED`/`OPEN`) | sí | `TEMPORARY_BLOCK_IP[_PORT]` solo si su `AUDITORIA_ALLOW_*` está en `true` | sí, tras validar protecciones dinámicas |
 
@@ -233,13 +277,15 @@ escalamiento está activo.
    El central la proyecta en `response_actions`.
 2. Un **superadmin** aprueba o rechaza desde el detalle del incidente:
    `POST /incidents/{id}/actions/{action_id}/approve` o `/reject`
-   (`{"reason": "..."}` opcional, máximo 500 caracteres, sin caracteres de
-   control). Requiere sesión, token CSRF y mismo origen; un viewer recibe `403`.
+   (`{"reason": "..."}` opcional, máximo 500 caracteres; los caracteres no
+   imprimibles se sustituyen por espacios al guardarlo). Requiere sesión,
+   token CSRF y mismo origen; un viewer recibe `403`.
    La transición `PENDING_APPROVAL → APPROVED/REJECTED` es atómica
    (`BEGIN IMMEDIATE`); un segundo intento o una acción vencida devuelve `409`.
    Se registra usuario, id de usuario, fecha y motivo.
-3. El agente consulta `GET /agent/response-actions` (credencial del agente) en
-   su ciclo principal, solo si tiene acciones pendientes. El central solo envía
+3. El agente consulta `GET /agent/response-actions` (credencial del agente) al
+   final de su ciclo principal, antes de las capturas forenses, solo si tiene
+   acciones pendientes. El central solo envía
    `action_id` + decisión: el agente ejecuta únicamente la acción que él mismo
    propuso y almacenó.
 4. Al aprobar, el agente: transiciona atómicamente `PENDING_APPROVAL →
@@ -278,8 +324,11 @@ ya aprobó o rechazó; un agente no puede aprobar por sí mismo.
 | `AUDITORIA_EVIDENCE_COMMAND_TIMEOUT_SECONDS` | `5` | 1–30 |
 | `AUDITORIA_APPROVAL_TTL_SECONDS` | `3600` | 300–86400 |
 
-Valores inválidos vuelven al valor por defecto seguro (mismo patrón que el resto
-de variables de respuesta).
+Valores inválidos de las variables de esta tabla vuelven al valor por defecto
+seguro. Excepción fuera de la tabla: una entrada inválida en
+`AUDITORIA_TRUSTED_ADMIN_IPS` (incluido un rango CIDR) impide arrancar el
+agente. La referencia completa de variables está en
+[configuracion.md](configuracion.md).
 
 Ejemplo de laboratorio (bloqueo automático de SSH por IP+puerto con
 escalamiento):
@@ -296,8 +345,11 @@ AUDITORIA_EVIDENCE_ENABLED=true
 
 ## 8. API
 
-Todas requieren sesión y respetan el scope por `agent_id` (un viewer obtiene
-`404` para incidentes de servidores ajenos).
+Las rutas `/incidents…` requieren sesión y respetan el scope por `agent_id` (un
+viewer obtiene `404` para incidentes de servidores ajenos).
+`GET /agent/response-actions` no usa sesión: requiere la credencial del agente.
+La lista completa de rutas está en
+[referencia-tecnica.md](referencia-tecnica.md#api-http).
 
 | Método y ruta | Descripción |
 |---|---|

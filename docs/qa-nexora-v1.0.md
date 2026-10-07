@@ -1,4 +1,4 @@
-# Nexora v1.0 — Procedimiento de QA en `auditoria-clean-server`
+# Nexora v1.0 — Procedimiento de QA en el servidor de QA
 
 Procedimiento exacto para validar la rama `estabilizacion/v1.0` en el servidor
 limpio cuando vuelva a estar conectado. Este documento **solo describe** pruebas:
@@ -157,7 +157,7 @@ Una prueba es PASS solo si **todos** los puntos del resultado esperado se cumple
 
 ### Rol del servidor
 
-Se asume el rol `central` (agente + API, que es lo que `auditoria-clean-server`
+Se asume el rol `central` (agente + API, que es lo que el servidor de QA
 debe ejercitar). Con rol `agent` se omiten las pruebas de `auditoria-api`,
 `central.db`, `auth.db` y dashboard.
 
