@@ -5,13 +5,19 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#101214">
-  <title>Iniciar sesión | Auditoria System</title>
+  <title>Iniciar sesión | Nexora</title>
+  <meta name="description" content="Monitoreo, detección y respuesta para servidores Linux.">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iIzNCODJGNiIgZD0iTTQgNGg0bDEyIDE2aC00WiIvPjxwYXRoIGZpbGw9IiMxNEI4QTYiIGQ9Ik00IDRoNHYxNkg0Wk0xNiA0aDR2MTZoLTRaIi8+PC9zdmc+">
   <link rel="stylesheet" href="/dashboard/assets/styles.css">
   <script src="/dashboard/assets/login.js" defer></script>
 </head>
 <body class="login-page">
   <main class="login-panel">
-    <h1>Auditoria System</h1>
+    <div class="login-brand">
+      <svg class="brand-mark brand-mark-lg" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path class="mark-diag" d="M4 4h4l12 16h-4Z"></path><path class="mark-stem" d="M4 4h4v16H4ZM16 4h4v16h-4Z"></path></svg>
+      <h1>Nexora</h1>
+      <p class="login-tagline">Monitoreo y seguridad de tu infraestructura</p>
+    </div>
     <form id="login-form" action="/auth/login" method="post">
       <label>Usuario<input name="username" type="text" autocomplete="username" maxlength="64" required autofocus></label>
       <div class="form-control">

@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.main import create_app
+from app.central.config import CentralSettings
 from app.core.config import AgentSettings
 from app.storage.event_repository import EventRepository
 from tests.api_test_helpers import create_test_auth_repository, login_test_user
@@ -26,6 +27,9 @@ def build_client(tmp_path: Path) -> TestClient:
             settings=settings,
             repository=repository,
             auth_repository=create_test_auth_repository(tmp_path),
+            central_settings=CentralSettings(
+                database_file=tmp_path / "central" / "central.db"
+            ),
         )
     )
     login_test_user(client)
@@ -42,7 +46,7 @@ def test_dashboard_returns_html(tmp_path: Path) -> None:
     assert "script-src 'self'" in csp
     assert "'unsafe-inline'" not in csp
     assert response.headers["x-content-type-options"] == "nosniff"
-    assert "Auditoria System" in response.text
+    assert "Nexora" in response.text
     assert 'id="events-body"' in response.text
     assert "<script src=" in response.text
     assert "<script>" not in response.text
@@ -66,7 +70,7 @@ def test_dashboard_module_routes_return_shared_shell(
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
-    assert "Auditoria System" in response.text
+    assert "Nexora" in response.text
     assert "/dashboard/assets/styles.css" in response.text
     assert "/dashboard/assets/dashboard.js" in response.text
 

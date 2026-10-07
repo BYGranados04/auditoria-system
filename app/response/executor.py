@@ -3,16 +3,24 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from ipaddress import IPv4Address, IPv6Address, ip_address
+from typing import Any
 from uuid import UUID, uuid4
 
 from app.response.firewall import (
+    SUPPORTED_PROTOCOLS,
     FirewallSafetyError,
     NftablesFirewallPlanner,
+    ProtectedAddressError,
+    TemporaryBlockPlan,
+    TemporaryPortBlockPlan,
+    static_protection_reason,
 )
 from app.response.firewall_backend import (
     NftablesFirewallBackend,
 )
 from app.response.models import (
+    EXECUTABLE_ACTIONS,
+    PORT_SCOPED_ACTIONS,
     ResponseDecision,
     ResponseExecutionResult,
 )
@@ -58,11 +66,13 @@ class ResponseExecutor:
         response_event_id: UUID | None = None,
         execution_event_id: UUID | None = None,
     ) -> ResponseExecutionResult:
-        if decision.action != "TEMPORARY_BLOCK_IP":
+        if decision.action not in EXECUTABLE_ACTIONS:
             return self._skipped(
                 decision,
                 reason=("La decisión no requiere una acción ejecutable."),
             )
+
+        port_block = decision.action == "TEMPORARY_BLOCK_IP_PORT"
 
         if not decision.execution_allowed:
             return self._skipped(
@@ -91,6 +101,7 @@ class ResponseExecutor:
                 decision,
                 target_ip=normalized_ip,
                 reason=("El ejecutor rechazó una dirección IP protegida."),
+                protection_rejected=True,
             )
 
         if normalized_ip in self.policy.trusted_admin_ips:
@@ -98,6 +109,21 @@ class ResponseExecutor:
                 decision,
                 target_ip=normalized_ip,
                 reason=("El ejecutor rechazó una fuente administrativa confiable."),
+                protection_rejected=True,
+            )
+
+        static_reason = static_protection_reason(normalized_ip)
+
+        if static_reason is not None:
+            # Tailscale y demás categorías estáticas: la decisión se conserva
+            # y la capa de ejecución documenta por qué no se aplica.
+            return self._skipped(
+                decision,
+                target_ip=normalized_ip,
+                reason=(
+                    f"El ejecutor rechazó una dirección protegida: {static_reason}"
+                ),
+                protection_rejected=True,
             )
 
         if decision.duration_seconds is None:
@@ -105,6 +131,20 @@ class ResponseExecutor:
                 decision,
                 target_ip=normalized_ip,
                 reason=("La decisión no contiene duración para el bloqueo temporal."),
+            )
+
+        if port_block and (
+            decision.protocol not in SUPPORTED_PROTOCOLS
+            or decision.port is None
+            or not 1 <= decision.port <= 65535
+        ):
+            return self._skipped(
+                decision,
+                target_ip=normalized_ip,
+                reason=(
+                    "La decisión de bloqueo por puerto no contiene "
+                    "un protocolo y puerto válidos."
+                ),
             )
 
         if self.dry_run:
@@ -119,6 +159,7 @@ class ResponseExecutor:
                 reason=(
                     "La acción fue validada en modo dry-run; no se modificó el sistema."
                 ),
+                **self._service_fields(decision),
             )
 
         if response_event_id is None or execution_event_id is None:
@@ -136,16 +177,28 @@ class ResponseExecutor:
 
             planner = NftablesFirewallPlanner(protected_ips=(snapshot.protected_ips))
 
-            plan = planner.plan_temporary_block(
-                normalized_ip,
-                decision.duration_seconds,
-            )
+            plan: TemporaryBlockPlan | TemporaryPortBlockPlan
+            if port_block:
+                assert decision.protocol is not None
+                assert decision.port is not None
+                plan = planner.plan_temporary_port_block(
+                    normalized_ip,
+                    decision.protocol,
+                    decision.port,
+                    decision.duration_seconds,
+                )
+            else:
+                plan = planner.plan_temporary_block(
+                    normalized_ip,
+                    decision.duration_seconds,
+                )
 
         except FirewallSafetyError as exc:
             return self._skipped(
                 decision,
                 target_ip=normalized_ip,
                 reason=(f"El bloqueo fue rechazado por protección dinámica: {exc}"),
+                protection_rejected=isinstance(exc, ProtectedAddressError),
             )
 
         except Exception as exc:
@@ -166,6 +219,36 @@ class ResponseExecutor:
                 now=requested_at,
             )
 
+            scope = self._block_scope_fields(plan)
+            existing = self.repository.find_live_response_block(
+                hostname=decision.hostname,
+                target_ip=plan.target_ip,
+                action=str(scope.get("action", "TEMPORARY_BLOCK_IP")),
+                protocol=scope.get("protocol"),
+                port=scope.get("port"),
+                now=requested_at,
+            )
+        except Exception as exc:
+            return self._failed(
+                decision,
+                target_ip=plan.target_ip,
+                reason=(f"No fue posible consultar bloqueos vigentes: {exc}"),
+            )
+
+        if existing is not None:
+            # Idempotencia: varias detecciones del mismo ataque no duplican
+            # el bloqueo ni se registran como fallo.
+            return self._skipped(
+                decision,
+                target_ip=plan.target_ip,
+                reason=(
+                    "Ya existe un bloqueo vigente equivalente "
+                    f"({existing['block_id']}); no se duplicó."
+                ),
+            )
+
+        try:
+
             self.repository.create_response_block(
                 block_id=str(block_id),
                 detection_event_id=str(decision.detection_event_id),
@@ -176,6 +259,7 @@ class ResponseExecutor:
                 duration_seconds=(plan.duration_seconds),
                 requested_at=requested_at,
                 expires_at=expires_at,
+                **self._block_scope_fields(plan),
             )
 
         except Exception as exc:
@@ -186,7 +270,10 @@ class ResponseExecutor:
             )
 
         try:
-            self.backend.prepare()
+            if isinstance(plan, TemporaryPortBlockPlan):
+                self.backend.prepare_port_blocking()
+            else:
+                self.backend.prepare()
 
             self.backend.add_temporary_block(plan)
 
@@ -257,6 +344,7 @@ class ResponseExecutor:
             executed=True,
             reason=("El bloqueo temporal fue aplicado y registrado como ACTIVE."),
             block_id=block_id,
+            **self._service_fields(decision),
         )
 
     def _mark_pending_failed(
@@ -296,6 +384,7 @@ class ResponseExecutor:
             executed=False,
             reason=reason,
             block_id=block_id,
+            **self._service_fields(decision),
         )
 
     def _skipped(
@@ -304,6 +393,7 @@ class ResponseExecutor:
         *,
         reason: str,
         target_ip: str | None = None,
+        protection_rejected: bool = False,
     ) -> ResponseExecutionResult:
         return ResponseExecutionResult(
             detection_event_id=(decision.detection_event_id),
@@ -314,7 +404,41 @@ class ResponseExecutor:
             dry_run=self.dry_run,
             executed=False,
             reason=reason,
+            protection_rejected=protection_rejected,
+            **self._service_fields(decision),
         )
+
+    @staticmethod
+    def _service_fields(
+        decision: ResponseDecision,
+    ) -> dict[str, Any]:
+        fields: dict[str, Any] = {"approval_id": decision.approval_id}
+
+        if decision.action not in PORT_SCOPED_ACTIONS:
+            return fields
+
+        port = decision.port
+        valid_port = port if port is not None and 1 <= port <= 65535 else None
+
+        return {
+            **fields,
+            "protocol": decision.protocol,
+            "port": valid_port,
+        }
+
+    @staticmethod
+    def _block_scope_fields(
+        plan: TemporaryBlockPlan | TemporaryPortBlockPlan,
+    ) -> dict[str, Any]:
+        if isinstance(plan, TemporaryPortBlockPlan):
+            return {
+                "action": "TEMPORARY_BLOCK_IP_PORT",
+                "protocol": plan.protocol,
+                "port": plan.port,
+            }
+
+        # El bloqueo por IP conserva exactamente la llamada histórica.
+        return {}
 
     @staticmethod
     def _is_protected_address(

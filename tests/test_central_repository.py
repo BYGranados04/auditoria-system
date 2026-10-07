@@ -83,7 +83,7 @@ def test_central_database_creation_schema_indexes_and_wal(tmp_path: Path) -> Non
         journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
         version = connection.execute("PRAGMA user_version").fetchone()[0]
 
-    assert version == 1
+    assert version == 3
     assert journal_mode == "wal"
     assert columns == {
         "id",

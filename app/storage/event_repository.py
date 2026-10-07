@@ -20,7 +20,7 @@ class PendingOutboxEvent:
 
 
 class EventRepository:
-    SCHEMA_VERSION = 3
+    SCHEMA_VERSION = 5
 
     def __init__(
         self,
@@ -110,6 +110,8 @@ class EventRepository:
                 1: self._migrate_to_v1,
                 2: self._migrate_to_v2,
                 3: self._migrate_to_v3,
+                4: self._migrate_to_v4,
+                5: self._migrate_to_v5,
             }
 
             while current_version < self.SCHEMA_VERSION:
@@ -288,6 +290,214 @@ class EventRepository:
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_event_outbox_pending "
             "ON event_outbox (status, next_attempt_at, created_at)"
+        )
+
+    @staticmethod
+    def _migrate_to_v4(
+        connection: sqlite3.Connection,
+    ) -> None:
+        """Bloqueo IP+puerto, incidentes locales y reincidencia persistente.
+
+        Migración aditiva: no elimina datos. Los bloqueos existentes quedan
+        como ``TEMPORARY_BLOCK_IP`` sin protocolo ni puerto.
+        """
+
+        columns = {
+            str(row["name"])
+            for row in connection.execute(
+                "PRAGMA table_info(response_blocks)"
+            ).fetchall()
+        }
+
+        if "action" not in columns:
+            connection.execute(
+                """
+                ALTER TABLE response_blocks
+                ADD COLUMN action TEXT NOT NULL
+                    DEFAULT 'TEMPORARY_BLOCK_IP'
+                    CHECK (
+                        action IN (
+                            'TEMPORARY_BLOCK_IP',
+                            'TEMPORARY_BLOCK_IP_PORT'
+                        )
+                    )
+                """
+            )
+
+        if "protocol" not in columns:
+            connection.execute(
+                """
+                ALTER TABLE response_blocks
+                ADD COLUMN protocol TEXT
+                    CHECK (protocol IS NULL OR protocol IN ('tcp', 'udp'))
+                """
+            )
+
+        if "port" not in columns:
+            connection.execute(
+                """
+                ALTER TABLE response_blocks
+                ADD COLUMN port INTEGER
+                    CHECK (port IS NULL OR (port >= 1 AND port <= 65535))
+                """
+            )
+
+        # El índice único de bloqueos vivos se amplía para distinguir el
+        # alcance. Para TEMPORARY_BLOCK_IP la unicidad (hostname, target_ip)
+        # se conserva exactamente igual que antes.
+        connection.execute("DROP INDEX IF EXISTS idx_response_blocks_live_target")
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS
+                idx_response_blocks_live_target
+            ON response_blocks (
+                hostname,
+                target_ip,
+                action,
+                COALESCE(protocol, ''),
+                COALESCE(port, 0)
+            )
+            WHERE status IN ('PENDING', 'ACTIVE')
+            """
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS incidents (
+                incident_id TEXT PRIMARY KEY,
+                hostname TEXT NOT NULL,
+                incident_type TEXT NOT NULL,
+                severity TEXT NOT NULL
+                    CHECK (severity IN ('low', 'medium', 'high', 'critical')),
+                source_ip TEXT,
+                status TEXT NOT NULL
+                    CHECK (
+                        status IN ('OPEN', 'OBSERVED', 'CONTAINED', 'CLOSED')
+                    ),
+                opened_at TEXT NOT NULL,
+                last_activity_at TEXT NOT NULL,
+                closed_at TEXT,
+                detection_count INTEGER NOT NULL DEFAULT 0
+                    CHECK (detection_count >= 0),
+                recurrence_level INTEGER,
+                last_action TEXT,
+                last_execution_status TEXT,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_incidents_lookup "
+            "ON incidents (hostname, source_ip, status, last_activity_at)"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS response_offenses (
+                offense_id TEXT PRIMARY KEY,
+                hostname TEXT NOT NULL,
+                source_ip TEXT NOT NULL,
+                detection_event_id TEXT NOT NULL UNIQUE,
+                detection_type TEXT NOT NULL,
+                incident_id TEXT,
+                occurred_at TEXT NOT NULL,
+                recurrence_level INTEGER NOT NULL
+                    CHECK (recurrence_level >= 1),
+                selected_duration_seconds INTEGER,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_response_offenses_lookup "
+            "ON response_offenses (hostname, source_ip, occurred_at)"
+        )
+
+    @staticmethod
+    def _migrate_to_v5(
+        connection: sqlite3.Connection,
+    ) -> None:
+        """Aprobaciones del modo assisted y cola forense diferida.
+
+        Migración aditiva posterior a v4: solo crea tablas e índices nuevos.
+        """
+
+        # Acciones del modo assisted pendientes de aprobación humana. El
+        # agente solo ejecuta lo que él mismo propuso y almacenó aquí.
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS response_approvals (
+                action_id TEXT PRIMARY KEY,
+                incident_id TEXT,
+                detection_event_id TEXT NOT NULL UNIQUE,
+                decision_event_id TEXT NOT NULL,
+                hostname TEXT NOT NULL,
+                action TEXT NOT NULL
+                    CHECK (
+                        action IN (
+                            'TEMPORARY_BLOCK_IP',
+                            'TEMPORARY_BLOCK_IP_PORT'
+                        )
+                    ),
+                target_ip TEXT NOT NULL,
+                protocol TEXT
+                    CHECK (protocol IS NULL OR protocol IN ('tcp', 'udp')),
+                port INTEGER
+                    CHECK (port IS NULL OR (port >= 1 AND port <= 65535)),
+                duration_seconds INTEGER NOT NULL
+                    CHECK (
+                        duration_seconds >= 60
+                        AND duration_seconds <= 86400
+                    ),
+                requested_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                status TEXT NOT NULL
+                    CHECK (
+                        status IN (
+                            'PENDING_APPROVAL',
+                            'EXECUTING',
+                            'EXECUTED',
+                            'SKIPPED',
+                            'FAILED',
+                            'REJECTED',
+                            'EXPIRED'
+                        )
+                    ),
+                decided_by TEXT,
+                decided_at TEXT,
+                decision_reason TEXT,
+                execution_event_id TEXT,
+                result_reason TEXT,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_response_approvals_status "
+            "ON response_approvals (status, expires_at)"
+        )
+
+        # Captura forense ampliada diferida: se procesa después de la
+        # contención, en el mismo hilo del agente, y sobrevive reinicios.
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS forensic_capture_queue (
+                detection_event_id TEXT PRIMARY KEY,
+                incident_id TEXT,
+                detection_json TEXT NOT NULL,
+                quick_snapshot_json TEXT,
+                status TEXT NOT NULL DEFAULT 'PENDING'
+                    CHECK (status IN ('PENDING', 'DONE', 'FAILED')),
+                attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_forensic_capture_queue_pending "
+            "ON forensic_capture_queue (status, created_at)"
         )
 
     def add(
@@ -492,7 +702,23 @@ class EventRepository:
         duration_seconds: int,
         requested_at: datetime,
         expires_at: datetime,
+        action: str = "TEMPORARY_BLOCK_IP",
+        protocol: str | None = None,
+        port: int | None = None,
     ) -> None:
+        if action == "TEMPORARY_BLOCK_IP":
+            if protocol is not None or port is not None:
+                raise ValueError(
+                    "TEMPORARY_BLOCK_IP no admite protocolo ni puerto."
+                )
+        elif action == "TEMPORARY_BLOCK_IP_PORT":
+            if protocol is None or port is None:
+                raise ValueError(
+                    "TEMPORARY_BLOCK_IP_PORT requiere protocolo y puerto."
+                )
+        else:
+            raise ValueError("Acción de bloqueo no soportada.")
+
         with self._connection() as connection:
             connection.execute(
                 """
@@ -506,9 +732,12 @@ class EventRepository:
                     duration_seconds,
                     requested_at,
                     expires_at,
-                    status
+                    status,
+                    action,
+                    protocol,
+                    port
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?)
                 """,
                 (
                     block_id,
@@ -520,6 +749,9 @@ class EventRepository:
                     duration_seconds,
                     requested_at.astimezone(UTC).isoformat(),
                     expires_at.astimezone(UTC).isoformat(),
+                    action,
+                    protocol,
+                    port,
                 ),
             )
 
@@ -709,6 +941,42 @@ class EventRepository:
 
         return [dict(row) for row in rows]
 
+    def find_live_response_block(
+        self,
+        *,
+        hostname: str,
+        target_ip: str,
+        action: str,
+        protocol: str | None,
+        port: int | None,
+        now: datetime,
+    ) -> dict[str, Any] | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM response_blocks
+                WHERE hostname = ?
+                  AND target_ip = ?
+                  AND action = ?
+                  AND COALESCE(protocol, '') = ?
+                  AND COALESCE(port, 0) = ?
+                  AND status IN ('PENDING', 'ACTIVE')
+                  AND julianday(expires_at) > julianday(?)
+                LIMIT 1
+                """,
+                (
+                    hostname,
+                    target_ip,
+                    action,
+                    protocol or "",
+                    port or 0,
+                    now.astimezone(UTC).isoformat(),
+                ),
+            ).fetchone()
+
+        return dict(row) if row is not None else None
+
     def get_response_block(
         self,
         block_id: str,
@@ -727,6 +995,573 @@ class EventRepository:
             return None
 
         return dict(row)
+
+    # ------------------------------------------------------------------
+    # Reincidencia persistente
+    # ------------------------------------------------------------------
+
+    def count_response_offenses(
+        self,
+        *,
+        hostname: str,
+        source_ip: str,
+        since: datetime,
+        until: datetime,
+        exclude_detection_event_id: str | None = None,
+    ) -> int:
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM response_offenses
+                WHERE hostname = ?
+                  AND source_ip = ?
+                  AND julianday(occurred_at) > julianday(?)
+                  AND julianday(occurred_at) <= julianday(?)
+                  AND detection_event_id != ?
+                """,
+                (
+                    hostname,
+                    source_ip,
+                    since.astimezone(UTC).isoformat(),
+                    until.astimezone(UTC).isoformat(),
+                    exclude_detection_event_id or "",
+                ),
+            ).fetchone()
+
+        return int(row["total"])
+
+    def record_response_offense(
+        self,
+        *,
+        offense_id: str,
+        hostname: str,
+        source_ip: str,
+        detection_event_id: str,
+        detection_type: str,
+        incident_id: str | None,
+        occurred_at: datetime,
+        recurrence_level: int,
+        selected_duration_seconds: int | None,
+    ) -> bool:
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO response_offenses (
+                    offense_id,
+                    hostname,
+                    source_ip,
+                    detection_event_id,
+                    detection_type,
+                    incident_id,
+                    occurred_at,
+                    recurrence_level,
+                    selected_duration_seconds
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    offense_id,
+                    hostname,
+                    source_ip,
+                    detection_event_id,
+                    detection_type,
+                    incident_id,
+                    occurred_at.astimezone(UTC).isoformat(),
+                    recurrence_level,
+                    selected_duration_seconds,
+                ),
+            )
+
+        return cursor.rowcount == 1
+
+    # ------------------------------------------------------------------
+    # Aprobaciones del modo assisted
+    # ------------------------------------------------------------------
+
+    def create_response_approval(
+        self,
+        *,
+        action_id: str,
+        incident_id: str | None,
+        detection_event_id: str,
+        decision_event_id: str,
+        hostname: str,
+        action: str,
+        target_ip: str,
+        protocol: str | None,
+        port: int | None,
+        duration_seconds: int,
+        requested_at: datetime,
+        expires_at: datetime,
+    ) -> None:
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO response_approvals (
+                    action_id, incident_id, detection_event_id,
+                    decision_event_id, hostname, action, target_ip,
+                    protocol, port, duration_seconds, requested_at,
+                    expires_at, status, updated_at
+                )
+                VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    'PENDING_APPROVAL', ?
+                )
+                """,
+                (
+                    action_id,
+                    incident_id,
+                    detection_event_id,
+                    decision_event_id,
+                    hostname,
+                    action,
+                    target_ip,
+                    protocol,
+                    port,
+                    duration_seconds,
+                    requested_at.astimezone(UTC).isoformat(),
+                    expires_at.astimezone(UTC).isoformat(),
+                    requested_at.astimezone(UTC).isoformat(),
+                ),
+            )
+
+    def get_response_approval(self, action_id: str) -> dict[str, Any] | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM response_approvals WHERE action_id = ?",
+                (action_id,),
+            ).fetchone()
+
+        return dict(row) if row is not None else None
+
+    def count_pending_response_approvals(self) -> int:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS total FROM response_approvals "
+                "WHERE status = 'PENDING_APPROVAL'"
+            ).fetchone()
+
+        return int(row["total"])
+
+    def claim_response_approval(
+        self,
+        action_id: str,
+        *,
+        decided_by: str,
+        decided_at: datetime,
+        now: datetime,
+    ) -> dict[str, Any] | None:
+        """Transición atómica PENDING_APPROVAL -> EXECUTING.
+
+        Devuelve la fila solo a quien gana la transición; impide la doble
+        ejecución y la ejecución de acciones vencidas.
+        """
+
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE response_approvals
+                SET status = 'EXECUTING',
+                    decided_by = ?,
+                    decided_at = ?,
+                    updated_at = ?
+                WHERE action_id = ?
+                  AND status = 'PENDING_APPROVAL'
+                  AND julianday(expires_at) > julianday(?)
+                """,
+                (
+                    decided_by,
+                    decided_at.astimezone(UTC).isoformat(),
+                    now.astimezone(UTC).isoformat(),
+                    action_id,
+                    now.astimezone(UTC).isoformat(),
+                ),
+            )
+            if cursor.rowcount != 1:
+                return None
+            row = connection.execute(
+                "SELECT * FROM response_approvals WHERE action_id = ?",
+                (action_id,),
+            ).fetchone()
+
+        return dict(row)
+
+    def finish_response_approval(
+        self,
+        action_id: str,
+        *,
+        status: str,
+        result_reason: str,
+        execution_event_id: str | None,
+        now: datetime,
+    ) -> None:
+        if status not in {"EXECUTED", "SKIPPED", "FAILED"}:
+            raise ValueError("Estado final de aprobación no válido.")
+
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE response_approvals
+                SET status = ?,
+                    result_reason = ?,
+                    execution_event_id = ?,
+                    updated_at = ?
+                WHERE action_id = ?
+                  AND status = 'EXECUTING'
+                """,
+                (
+                    status,
+                    result_reason[:500],
+                    execution_event_id,
+                    now.astimezone(UTC).isoformat(),
+                    action_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError(
+                    f"La aprobación {action_id} no estaba en ejecución."
+                )
+
+    def reject_response_approval(
+        self,
+        action_id: str,
+        *,
+        decided_by: str,
+        decided_at: datetime,
+        reason: str | None,
+        now: datetime,
+    ) -> dict[str, Any] | None:
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE response_approvals
+                SET status = 'REJECTED',
+                    decided_by = ?,
+                    decided_at = ?,
+                    decision_reason = ?,
+                    updated_at = ?
+                WHERE action_id = ?
+                  AND status = 'PENDING_APPROVAL'
+                """,
+                (
+                    decided_by,
+                    decided_at.astimezone(UTC).isoformat(),
+                    reason,
+                    now.astimezone(UTC).isoformat(),
+                    action_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                return None
+            row = connection.execute(
+                "SELECT * FROM response_approvals WHERE action_id = ?",
+                (action_id,),
+            ).fetchone()
+
+        return dict(row)
+
+    def expire_response_approvals(self, *, now: datetime) -> list[dict[str, Any]]:
+        timestamp = now.astimezone(UTC).isoformat()
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM response_approvals
+                WHERE status = 'PENDING_APPROVAL'
+                  AND julianday(expires_at) <= julianday(?)
+                """,
+                (timestamp,),
+            ).fetchall()
+            expired: list[dict[str, Any]] = []
+            for row in rows:
+                cursor = connection.execute(
+                    """
+                    UPDATE response_approvals
+                    SET status = 'EXPIRED', updated_at = ?
+                    WHERE action_id = ? AND status = 'PENDING_APPROVAL'
+                    """,
+                    (timestamp, row["action_id"]),
+                )
+                if cursor.rowcount == 1:
+                    expired.append({**dict(row), "status": "EXPIRED"})
+
+        return expired
+
+    def fail_interrupted_response_approvals(self, *, reason: str) -> int:
+        """EXECUTING tras un reinicio no puede confirmarse: queda FAILED."""
+
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE response_approvals
+                SET status = 'FAILED', result_reason = ?, updated_at = ?
+                WHERE status = 'EXECUTING'
+                """,
+                (reason, datetime.now(UTC).isoformat()),
+            )
+
+        return cursor.rowcount
+
+    # ------------------------------------------------------------------
+    # Cola de captura forense ampliada
+    # ------------------------------------------------------------------
+
+    def enqueue_forensic_capture(
+        self,
+        *,
+        detection_event_id: str,
+        incident_id: str | None,
+        detection_json: str,
+        quick_snapshot_json: str | None,
+        created_at: datetime,
+    ) -> bool:
+        timestamp = created_at.astimezone(UTC).isoformat()
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO forensic_capture_queue (
+                    detection_event_id, incident_id, detection_json,
+                    quick_snapshot_json, status, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, 'PENDING', ?, ?)
+                """,
+                (
+                    detection_event_id,
+                    incident_id,
+                    detection_json,
+                    quick_snapshot_json,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+
+        return cursor.rowcount == 1
+
+    def list_pending_forensic_captures(self, *, limit: int) -> list[dict[str, Any]]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM forensic_capture_queue
+                WHERE status = 'PENDING'
+                ORDER BY created_at ASC
+                LIMIT ?
+                """,
+                (max(1, min(limit, 100)),),
+            ).fetchall()
+
+        return [dict(row) for row in rows]
+
+    def update_forensic_capture(
+        self,
+        detection_event_id: str,
+        *,
+        status: str,
+        error: str | None,
+        now: datetime,
+    ) -> None:
+        if status not in {"PENDING", "DONE", "FAILED"}:
+            raise ValueError("Estado de captura no válido.")
+
+        with self._connection() as connection:
+            connection.execute(
+                """
+                UPDATE forensic_capture_queue
+                SET status = ?,
+                    attempts = attempts + 1,
+                    last_error = ?,
+                    updated_at = ?
+                WHERE detection_event_id = ?
+                """,
+                (
+                    status,
+                    error[:300] if error else None,
+                    now.astimezone(UTC).isoformat(),
+                    detection_event_id,
+                ),
+            )
+
+    # ------------------------------------------------------------------
+    # Incidentes locales del agente
+    # ------------------------------------------------------------------
+
+    def find_active_incident(
+        self,
+        *,
+        hostname: str,
+        source_ip: str,
+        active_since: datetime,
+    ) -> dict[str, Any] | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM incidents
+                WHERE hostname = ?
+                  AND source_ip = ?
+                  AND status != 'CLOSED'
+                  AND julianday(last_activity_at) >= julianday(?)
+                ORDER BY last_activity_at DESC
+                LIMIT 1
+                """,
+                (
+                    hostname,
+                    source_ip,
+                    active_since.astimezone(UTC).isoformat(),
+                ),
+            ).fetchone()
+
+        return dict(row) if row is not None else None
+
+    def create_incident(
+        self,
+        *,
+        incident_id: str,
+        hostname: str,
+        incident_type: str,
+        severity: str,
+        source_ip: str | None,
+        status: str,
+        opened_at: datetime,
+    ) -> dict[str, Any]:
+        timestamp = opened_at.astimezone(UTC).isoformat()
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO incidents (
+                    incident_id,
+                    hostname,
+                    incident_type,
+                    severity,
+                    source_ip,
+                    status,
+                    opened_at,
+                    last_activity_at,
+                    detection_count,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+                """,
+                (
+                    incident_id,
+                    hostname,
+                    incident_type,
+                    severity,
+                    source_ip,
+                    status,
+                    timestamp,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM incidents WHERE incident_id = ?",
+                (incident_id,),
+            ).fetchone()
+
+        return dict(row)
+
+    def update_incident(
+        self,
+        incident_id: str,
+        *,
+        updated_at: datetime,
+        severity: str | None = None,
+        status: str | None = None,
+        last_activity_at: datetime | None = None,
+        closed_at: datetime | None = None,
+        increment_detections: int = 0,
+        recurrence_level: int | None = None,
+        last_action: str | None = None,
+        last_execution_status: str | None = None,
+    ) -> dict[str, Any]:
+        assignments = [
+            "updated_at = ?",
+            "detection_count = detection_count + ?",
+        ]
+        parameters: list[Any] = [
+            updated_at.astimezone(UTC).isoformat(),
+            max(increment_detections, 0),
+        ]
+
+        optional: tuple[tuple[str, Any], ...] = (
+            ("severity", severity),
+            ("status", status),
+            (
+                "last_activity_at",
+                last_activity_at.astimezone(UTC).isoformat()
+                if last_activity_at is not None
+                else None,
+            ),
+            (
+                "closed_at",
+                closed_at.astimezone(UTC).isoformat()
+                if closed_at is not None
+                else None,
+            ),
+            ("recurrence_level", recurrence_level),
+            ("last_action", last_action),
+            ("last_execution_status", last_execution_status),
+        )
+
+        for column, value in optional:
+            if value is not None:
+                assignments.append(f"{column} = ?")
+                parameters.append(value)
+
+        parameters.append(incident_id)
+
+        with self._connection() as connection:
+            cursor = connection.execute(
+                f"UPDATE incidents SET {', '.join(assignments)} "
+                "WHERE incident_id = ?",
+                parameters,
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError(f"No existe el incidente {incident_id}.")
+            row = connection.execute(
+                "SELECT * FROM incidents WHERE incident_id = ?",
+                (incident_id,),
+            ).fetchone()
+
+        return dict(row)
+
+    def get_incident(
+        self,
+        incident_id: str,
+    ) -> dict[str, Any] | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM incidents WHERE incident_id = ?",
+                (incident_id,),
+            ).fetchone()
+
+        return dict(row) if row is not None else None
+
+    def list_stale_incidents(
+        self,
+        *,
+        inactive_before: datetime,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM incidents
+                WHERE status != 'CLOSED'
+                  AND julianday(last_activity_at) < julianday(?)
+                ORDER BY last_activity_at ASC
+                LIMIT ?
+                """,
+                (
+                    inactive_before.astimezone(UTC).isoformat(),
+                    max(1, min(limit, 1000)),
+                ),
+            ).fetchall()
+
+        return [dict(row) for row in rows]
 
     def statistics(
         self,

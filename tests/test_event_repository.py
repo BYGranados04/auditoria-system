@@ -37,7 +37,7 @@ def test_initializes_database(tmp_path: Path) -> None:
 
     assert repo.database_path.exists()
     assert repo.count() == 0
-    assert repo.schema_version() == 3
+    assert repo.schema_version() == 5
 
 
 def test_persists_event(tmp_path: Path) -> None:
@@ -225,7 +225,7 @@ def test_initialize_is_idempotent(tmp_path: Path) -> None:
     repo.initialize()
     repo.initialize()
 
-    assert repo.schema_version() == 3
+    assert repo.schema_version() == 5
     assert repo.count() == 1
 
 
@@ -286,7 +286,7 @@ def test_migrates_existing_v0_database_without_losing_events(
     repo = EventRepository(database_path)
     repo.initialize()
 
-    assert repo.schema_version() == 3
+    assert repo.schema_version() == 5
     assert repo.count() == 1
 
     events = repo.list_events()
@@ -301,7 +301,9 @@ def test_rejects_database_from_future_schema(
     database_path = tmp_path / "auditoria.db"
 
     with sqlite3.connect(database_path) as connection:
-        connection.execute("PRAGMA user_version = 4")
+        connection.execute(
+            f"PRAGMA user_version = {EventRepository.SCHEMA_VERSION + 1}"
+        )
 
     repo = EventRepository(database_path)
 
@@ -422,7 +424,7 @@ def test_migrates_v1_database_to_v2_without_losing_events(
     repo = EventRepository(database_path)
     repo.initialize()
 
-    assert repo.schema_version() == 3
+    assert repo.schema_version() == 5
     assert repo.count() == 1
 
     events = repo.list_events()
@@ -520,7 +522,7 @@ def test_migrates_v2_database_to_v3_without_assigning_legacy_agent(
             item[1] for item in connection.execute("PRAGMA index_list(events)")
         }
 
-    assert repo.schema_version() == 3
+    assert repo.schema_version() == 5
     assert row == (
         "legacy-v2-event",
         "shared-hostname",

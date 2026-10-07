@@ -19,7 +19,7 @@ def parse_datetime(value: str) -> datetime:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Consulta histórica de eventos de Auditoria System"
+        description="Consulta histórica de eventos de Nexora"
     )
 
     subparsers = parser.add_subparsers(

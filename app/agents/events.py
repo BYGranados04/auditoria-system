@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.auth.web import AuthManager
 from app.central.config import CentralSettings
+from app.central.incidents import CentralIncidentReader
 from app.central.repository import (
     CentralEventConflictError,
     CentralEventRepository,
@@ -60,6 +61,22 @@ class AgentEventBatchResponse(BaseModel):
     accepted: int
     inserted: int
     duplicates: int
+
+
+class AgentResponseAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action_id: str
+    decision: Literal["APPROVE", "REJECT"]
+    decided_by: str
+    decided_at: datetime
+    reason: str | None
+
+
+class AgentResponseActionsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actions: list[AgentResponseAction]
 
 
 def build_agent_event_router(
@@ -164,6 +181,44 @@ def build_agent_event_router(
             accepted=result.accepted,
             inserted=result.inserted,
             duplicates=result.duplicates,
+        )
+
+    reader = CentralIncidentReader(repository.database_path)
+
+    @router.get(
+        "/agent/response-actions",
+        response_model=AgentResponseActionsResponse,
+        tags=["agent-connectivity"],
+    )
+    def pending_response_actions(
+        agent: dict[str, object] = Depends(authenticate_agent),  # noqa: B008
+    ) -> AgentResponseActionsResponse:
+        """Decisiones humanas aún no aplicadas por este agente.
+
+        Solo expone action_id y la decisión; el agente ejecuta únicamente la
+        acción que él mismo propuso y almacenó localmente.
+        """
+
+        try:
+            rows = reader.instructions_for_agent(agent_id=str(agent["agent_id"]))
+        except sqlite3.Error as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Almacenamiento central no disponible.",
+            ) from exc
+
+        return AgentResponseActionsResponse(
+            actions=[
+                AgentResponseAction(
+                    action_id=str(row["action_id"]),
+                    decision="APPROVE" if row["status"] == "APPROVED" else "REJECT",
+                    decided_by=str(row["decided_by"] or "desconocido"),
+                    decided_at=row["decided_at"],
+                    reason=row["decision_reason"],
+                )
+                for row in rows
+                if row["decided_at"] is not None
+            ]
         )
 
     return router

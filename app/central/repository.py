@@ -10,6 +10,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from app.central.incidents import (
+    migrate_incidents_v2,
+    migrate_response_actions_v3,
+    project_event,
+)
 from app.core.events import SecurityEvent
 
 
@@ -59,7 +64,7 @@ def event_payload_hash(event: SecurityEvent) -> str:
 
 
 class CentralEventRepository:
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 3
 
     def __init__(
         self,
@@ -106,6 +111,14 @@ class CentralEventRepository:
             if version < 1:
                 self._migrate_to_v1(connection)
                 connection.execute("PRAGMA user_version = 1")
+                version = 1
+            if version < 2:
+                migrate_incidents_v2(connection)
+                connection.execute("PRAGMA user_version = 2")
+                version = 2
+            if version < 3:
+                migrate_response_actions_v3(connection)
+                connection.execute("PRAGMA user_version = 3")
 
     @staticmethod
     def _migrate_to_v1(connection: sqlite3.Connection) -> None:
@@ -260,6 +273,19 @@ class CentralEventRepository:
                 if cursor.rowcount == 0 and str(row["payload_hash"]) != payload_hash:
                     raise CentralEventConflictError(
                         "El event_id ya existe para el agente con otro payload."
+                    )
+                if cursor.rowcount == 1:
+                    # Solo eventos nuevos: un reintento duplicado del outbox
+                    # no vuelve a proyectar el incidente.
+                    project_event(
+                        connection,
+                        agent_id=normalized_agent_id,
+                        event_id=str(data["event_id"]),
+                        hostname=str(data["hostname"]),
+                        occurred_at=occurred_at,
+                        event_type=str(data["event_type"]),
+                        category=str(data["category"]),
+                        evidence=data["evidence"],
                     )
                 inserted += cursor.rowcount
                 records.append(self._record(row))

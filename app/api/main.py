@@ -12,10 +12,12 @@ from pydantic import BaseModel, ConfigDict
 
 from app.agents.events import build_agent_event_router
 from app.agents.web import build_agent_router
+from app.api.incidents import build_incident_router
 from app.auth.config import AuthSettings, load_auth_settings
 from app.auth.repository import AuthenticatedSession, AuthRepository
 from app.auth.web import AuthManager, build_auth_router
 from app.central.config import CentralSettings, load_central_settings
+from app.central.incidents import CentralIncidentReader, CentralResponseActionStore
 from app.central.repository import CentralEventRepository
 from app.core.config import AgentSettings, load_agent_settings
 from app.notifications.repository import NotificationRepository
@@ -134,9 +136,12 @@ def create_app(
     )
 
     application = FastAPI(
-        title="Auditoria System API",
-        description=("API local de consulta para Auditoria System."),
-        version="0.9.0",
+        title="Nexora API",
+        description=(
+            "API local de consulta de Nexora. "
+            "Monitoreo y seguridad de tu infraestructura."
+        ),
+        version="1.0.0",
     )
     application.include_router(build_auth_router(auth_manager))
     application.include_router(build_agent_router(auth_manager))
@@ -145,6 +150,13 @@ def create_app(
             auth_manager,
             resolved_central_repository,
             resolved_central_settings,
+        )
+    )
+    application.include_router(
+        build_incident_router(
+            auth_manager,
+            CentralIncidentReader(resolved_central_settings.database_file),
+            CentralResponseActionStore(resolved_central_settings.database_file),
         )
     )
     application.include_router(
@@ -183,6 +195,11 @@ def create_app(
     )
     @application.get(
         "/dashboard/servers",
+        include_in_schema=False,
+        response_class=FileResponse,
+    )
+    @application.get(
+        "/dashboard/incidents",
         include_in_schema=False,
         response_class=FileResponse,
     )
