@@ -1,7 +1,7 @@
 # Nexora 1.0.0
 
-Estado: QA físico y validación final G4 completados en Ubuntu Server 24.04.5
-LTS. Pendiente únicamente la autorización de tag y publicación. No publicada.
+Estado: publicada (tag `v1.0.0` y GitHub Release). QA físico y validación final
+G4 completados en Ubuntu Server 24.04.5 LTS.
 
 > Marca visible: Nexora. Los identificadores internos de v1.0 se conservan por
 > compatibilidad: paquete `auditoria-system`, servicios `auditoria-agent.service`
@@ -182,5 +182,5 @@ fallido.
 - [x] Indexar los scripts operativos como ejecutables (`100755`).
 - [ ] Ejecutar prueba Resend solo con secreto gestionado fuera de Git, si se
       decide incluirla como criterio de release.
-- [ ] Revisar notas y diff final.
-- [ ] Solo después, y con autorización explícita, crear commit, tag y release.
+- [x] Revisar notas y diff final.
+- [x] Solo después, y con autorización explícita, crear commit, tag y release.

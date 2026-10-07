@@ -313,7 +313,8 @@ lo que **debía pasar y no pasó**, además de lo que pasó.
 ### Dependencias
 
 - v1.2 (modelo métrica/regla/evento).
-- Canal de eventos firmados del agente (ya existente en v1.0 mediante identidad).
+- Canal de eventos firmados del agente. En v1.0 los eventos se autentican con la
+  credencial de cada agente (`Bearer`), pero no se firman.
 
 ### Criterios de aceptación
 
