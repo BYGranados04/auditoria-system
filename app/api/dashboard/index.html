@@ -355,7 +355,7 @@
         </div>
 
         <div class="module-view" data-view="servers" hidden>
-          <section class="module-section" aria-labelledby="servers-title">
+          <section id="servers-list-view" class="module-section" aria-labelledby="servers-title">
             <div class="module-heading server-heading">
               <div><h2 id="servers-title">Mis servidores</h2><span id="servers-count" class="panel-count">—</span></div>
               <button id="connect-server-button" class="primary-action" type="button">Conectar servidor</button>
@@ -368,22 +368,103 @@
               <div id="servers-unknown-wrap" class="is-unknown" hidden><dt>Desconocido</dt><dd id="servers-unknown">—</dd></div>
             </dl>
             <section id="registration-panel" class="registration-panel" aria-labelledby="registration-title" hidden>
+              <ol id="connect-steps" class="connect-steps" aria-label="Pasos para conectar un servidor">
+                <li data-step="command" class="is-current" aria-current="step"><span class="step-index">1</span>Generar comando</li>
+                <li data-step="waiting"><span class="step-index">2</span>Esperando conexión</li>
+                <li data-step="connected"><span class="step-index">3</span>Conectado</li>
+              </ol>
               <div class="registration-header">
                 <div>
-                  <h3 id="registration-title">Registrar agente</h3>
-                  <p>Ejecute este comando una vez en el servidor que desea conectar.</p>
+                  <h3 id="registration-title">Conectar un servidor</h3>
+                  <p>Ejecute este comando una vez en el servidor que desea conectar. Aparecerá en la lista en cuanto el agente se registre.</p>
                 </div>
                 <button id="copy-registration-command" class="table-action" type="button">Copiar comando</button>
               </div>
               <code id="registration-command" class="registration-command"></code>
               <p class="registration-expiry">El token vence en <time id="registration-expires-at">—</time> y solo puede utilizarse una vez.</p>
             </section>
-            <div class="table-wrap data-table-wrap">
-              <table class="data-table servers-table" aria-labelledby="servers-title">
-                <thead><tr><th scope="col">Servidor</th><th scope="col">Estado</th><th scope="col">Último contacto</th><th scope="col">Agent ID</th><th scope="col">Registrado</th></tr></thead>
-                <tbody id="servers-body"><tr><td colspan="5" class="state-cell"><span class="spinner"></span> Cargando servidores…</td></tr></tbody>
-              </table>
+            <ul id="servers-body" class="server-cards" aria-labelledby="servers-title">
+              <li class="state-cell"><span class="spinner"></span> Cargando servidores…</li>
+            </ul>
+          </section>
+
+          <section id="server-view" class="module-section server-view" aria-labelledby="server-view-title" hidden>
+            <a id="server-back" class="back-link" href="/dashboard/servers" data-keep-query="true">← Servidores</a>
+            <div class="server-view-header">
+              <div class="server-view-identity">
+                <div id="server-name-display" class="server-name-display">
+                  <h2 id="server-view-title" tabindex="-1">Cargando servidor…</h2>
+                  <button id="server-name-edit" class="table-action" type="button" hidden>Editar</button>
+                </div>
+                <form id="server-name-form" class="server-name-form" novalidate hidden>
+                  <label for="server-name-input" class="visually-hidden">Nombre del servidor</label>
+                  <input id="server-name-input" name="display_name" type="text" maxlength="64" autocomplete="off" spellcheck="false" placeholder="Nombre del servidor">
+                  <button class="primary-action" type="submit">Guardar</button>
+                  <button id="server-name-cancel" class="secondary-action" type="button">Cancelar</button>
+                  <p class="field-hint">Hasta 64 caracteres. Si lo deja vacío se mostrará el hostname.</p>
+                </form>
+                <span id="server-view-hostname" class="server-view-hostname" hidden></span>
+              </div>
+              <span id="server-view-presence" class="server-view-presence"></span>
             </div>
+            <div id="server-detail-alert" class="inline-alert" role="alert" hidden></div>
+
+            <div class="server-sections">
+              <section class="server-section server-section-general" aria-labelledby="server-general-title">
+                <h3 id="server-general-title">General</h3>
+                <dl id="server-general" class="server-facts"></dl>
+              </section>
+
+              <section class="server-section server-section-security" aria-labelledby="server-security-title">
+                <h3 id="server-security-title">Seguridad</h3>
+                <div id="server-security-current" class="security-current"></div>
+                <div id="server-mode-local" class="local-management" hidden>
+                  <strong>Administración local</strong>
+                  <p>Este servidor administra su política de respuesta localmente.</p>
+                  <details class="local-help">
+                    <summary>¿Cómo habilitar administración desde Nexora?</summary>
+                    <p id="server-mode-local-help"></p>
+                  </details>
+                </div>
+                <fieldset id="server-mode-options" class="mode-choices">
+                  <legend>Modo de respuesta</legend>
+                  <button type="button" class="mode-choice" data-mode="audit_only" aria-pressed="false">
+                    <span class="mode-choice-title">Auditado</span>
+                    <span class="mode-choice-text">Registra y avisa. Nunca bloquea.</span>
+                  </button>
+                  <button type="button" class="mode-choice" data-mode="assisted" aria-pressed="false">
+                    <span class="mode-choice-title">Asistido</span>
+                    <span class="mode-choice-text">Propone bloqueos y espera su aprobación.</span>
+                  </button>
+                  <button type="button" class="mode-choice" data-mode="automatic" aria-pressed="false">
+                    <span class="mode-choice-title">Automático</span>
+                    <span class="mode-choice-text">Puede bloquear temporalmente sin aprobación, si el servidor lo permite localmente.</span>
+                  </button>
+                </fieldset>
+                <div id="server-mode-actions" class="mode-actions" hidden>
+                  <button id="server-mode-submit" class="primary-action" type="button" disabled>Guardar cambio</button>
+                  <button id="server-mode-cancel" class="secondary-action" type="button">Cancelar</button>
+                </div>
+                <p id="server-mode-note" class="field-hint" hidden></p>
+              </section>
+
+              <section class="server-section server-section-activity" aria-labelledby="server-activity-title">
+                <h3 id="server-activity-title">Actividad</h3>
+                <div class="activity-block">
+                  <div class="activity-heading"><h4>Incidentes recientes</h4><a id="server-incidents-link" class="view-all" href="/dashboard/incidents" data-keep-query="true">Ver todos</a></div>
+                  <ul id="server-incidents" class="activity-list"><li class="state-cell">Cargando…</li></ul>
+                </div>
+                <div class="activity-block">
+                  <div class="activity-heading"><h4>Eventos recientes</h4><a id="server-events-link" class="view-all" href="/dashboard/events" data-keep-query="true">Ver todos</a></div>
+                  <ul id="server-events" class="activity-list"><li class="state-cell">Cargando…</li></ul>
+                </div>
+              </section>
+            </div>
+
+            <details class="server-technical-block">
+              <summary>Información técnica</summary>
+              <dl id="server-technical" class="server-facts"></dl>
+            </details>
           </section>
         </div>
       </div>

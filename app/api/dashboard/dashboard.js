@@ -108,6 +108,33 @@ const elements = {
   sidebarBackdrop: document.querySelector("#sidebar-backdrop"),
   sidebarCollapse: document.querySelector("#sidebar-collapse"),
   serversAlert: document.querySelector("#servers-alert"),
+  serversListView: document.querySelector("#servers-list-view"),
+  serverView: document.querySelector("#server-view"),
+  serverBack: document.querySelector("#server-back"),
+  serverViewTitle: document.querySelector("#server-view-title"),
+  serverViewHostname: document.querySelector("#server-view-hostname"),
+  serverViewPresence: document.querySelector("#server-view-presence"),
+  serverNameDisplay: document.querySelector("#server-name-display"),
+  serverNameEdit: document.querySelector("#server-name-edit"),
+  serverNameForm: document.querySelector("#server-name-form"),
+  serverNameInput: document.querySelector("#server-name-input"),
+  serverNameCancel: document.querySelector("#server-name-cancel"),
+  serverDetailAlert: document.querySelector("#server-detail-alert"),
+  serverGeneral: document.querySelector("#server-general"),
+  serverSecurityCurrent: document.querySelector("#server-security-current"),
+  serverModeLocal: document.querySelector("#server-mode-local"),
+  serverModeLocalHelp: document.querySelector("#server-mode-local-help"),
+  serverModeOptions: document.querySelector("#server-mode-options"),
+  serverModeActions: document.querySelector("#server-mode-actions"),
+  serverModeSubmit: document.querySelector("#server-mode-submit"),
+  serverModeCancel: document.querySelector("#server-mode-cancel"),
+  serverModeNote: document.querySelector("#server-mode-note"),
+  serverIncidents: document.querySelector("#server-incidents"),
+  serverIncidentsLink: document.querySelector("#server-incidents-link"),
+  serverEvents: document.querySelector("#server-events"),
+  serverEventsLink: document.querySelector("#server-events-link"),
+  serverTechnical: document.querySelector("#server-technical"),
+  connectSteps: document.querySelector("#connect-steps"),
   serversBody: document.querySelector("#servers-body"),
   serversCount: document.querySelector("#servers-count"),
   serversTitle: document.querySelector("#servers-title"),
@@ -518,9 +545,29 @@ function selectedAgent() {
   return knownAgents.find((agent) => agent.agent_id === selectedAgentId) ?? null;
 }
 
+function agentLabel(agent) {
+  // display_name es el nombre asignado por un administrador; hostname sigue
+  // siendo la referencia técnica cuando no existe.
+  return displayValue(agent?.display_name, displayValue(agent?.hostname));
+}
+
 function agentDisplayName(agent) {
   if (!agent) return "Todos los servidores";
-  return `${displayValue(agent.hostname)} · ${shortAgentId(agent.agent_id)}`;
+  return `${agentLabel(agent)} · ${shortAgentId(agent.agent_id)}`;
+}
+
+function agentNameCell(agent) {
+  const wrapper = makeElement("div", "server-cell");
+  if (agent.display_name) {
+    wrapper.append(
+      makeElement("span", "server-name", agent.display_name),
+      makeElement("span", "server-hostname", displayValue(agent.hostname)),
+    );
+  } else {
+    wrapper.append(makeElement("span", "server-hostname", displayValue(agent.hostname)));
+  }
+  wrapper.append(makeElement("span", "server-agent-id", shortAgentId(agent.agent_id)));
+  return wrapper;
 }
 
 function renderAgentSelector() {
@@ -532,7 +579,7 @@ function renderAgentSelector() {
     const option = makeElement(
       "option",
       "",
-      `${displayValue(agent.hostname)} · ${shortAgentId(agent.agent_id)} · ${presenceLabel(agent.presence)}`,
+      `${agentLabel(agent)} · ${shortAgentId(agent.agent_id)} · ${presenceLabel(agent.presence)}`,
     );
     option.value = agent.agent_id;
     option.selected = agent.agent_id === selectedAgentId;
@@ -799,7 +846,7 @@ function renderOverviewServers(agents) {
       lastSeen.dateTime = agent.last_seen_at;
       lastSeen.title = formatTimestamp(agent.last_seen_at);
     }
-    row.append(presenceBadge(agent.presence), serverCell(agent), lastSeen);
+    row.append(presenceBadge(agent.presence), agentNameCell(agent), lastSeen);
     return row;
   });
   if (agents.length > limit) {
@@ -1768,45 +1815,548 @@ function renderServersSummary(agents) {
   document.querySelector("#servers-unknown-wrap").hidden = counts.unknown === 0;
 }
 
+// ---------------------------------------------------------------------------
+// Servidores: lista y vista dedicada (/dashboard/servers?server=<agent_id>)
+// ---------------------------------------------------------------------------
+
+const RESPONSE_MODE_LABELS = {
+  audit_only: "Auditado",
+  assisted: "Asistido",
+  automatic: "Automático",
+};
+const RESPONSE_MODE_DESCRIPTIONS = {
+  audit_only: "Registra y avisa. Nunca bloquea.",
+  assisted: "Propone bloqueos y espera su aprobación.",
+  automatic: "Puede bloquear temporalmente sin aprobación, si el servidor lo permite localmente.",
+};
+// Traducción de config_status a lenguaje de usuario.
+const CONFIG_STATUS_LABELS = {
+  pending: "Aplicando…",
+  applied: "Sincronizado",
+  rejected: "No aplicado",
+};
+const LOCAL_MANAGEMENT_REASON = "Gestión del modo configurada localmente";
+const SERVER_QUERY_PARAM = "server";
+
+let serverViewId = null;
+let serverModeSelection = null;
+let serverNameEditing = false;
+let serverActivityController = null;
+
+function responseModeLabel(mode) {
+  return RESPONSE_MODE_LABELS[mode] ?? "No reportado";
+}
+
+function agentVersionLabel(agent) {
+  return agent.agent_version ? `Nexora Agent ${agent.agent_version}` : "No reportada";
+}
+
+function centralControlAvailable(agent) {
+  return agent.config_protocol !== null && agent.config_protocol !== undefined;
+}
+
+function isLocallyManaged(agent) {
+  // Un agente v1.0 (sin protocolo) también usa exclusivamente su agent.env.
+  return agent.config_source === "local" || !centralControlAvailable(agent);
+}
+
+function isLocalRejection(agent) {
+  return (
+    agent.config_status === "rejected" &&
+    (agent.config_source === "local" || agent.config_status_reason === LOCAL_MANAGEMENT_REASON)
+  );
+}
+
+function configStatusLabel(agent) {
+  return CONFIG_STATUS_LABELS[agent.config_status] ?? null;
+}
+
+function capabilityText(agent) {
+  // AUTOMATIC no implica bloqueo: los allow flags siguen siendo locales.
+  const mode = agent.effective_response_mode;
+  if (!mode) return { text: "Sin reporte del agente", state: "" };
+  if (mode === "audit_only") return { text: "Solo registra; no ejecuta bloqueos", state: "" };
+  const subject = mode === "automatic" ? "Respuesta automática" : "Bloqueo tras aprobación";
+  if (agent.blocking_enabled === true) return { text: `${subject}: habilitada`, state: "is-enabled" };
+  if (agent.blocking_enabled === false) {
+    return { text: `${subject}: limitada por configuración local (solo simulación)`, state: "is-limited" };
+  }
+  return { text: `${subject}: sin reporte`, state: "" };
+}
+
+function syncChip(agent) {
+  // Estado de sincronización de la última solicitud central, en lenguaje simple.
+  if (isLocalRejection(agent)) return makeElement("span", "sync-chip is-local", "Administración local");
+  const label = configStatusLabel(agent);
+  if (!label) return null;
+  return makeElement("span", `sync-chip is-${agent.config_status}`, label);
+}
+
+function serverPath(agentId) {
+  return agentId
+    ? `/dashboard/servers?${new URLSearchParams({ [SERVER_QUERY_PARAM]: agentId }).toString()}`
+    : "/dashboard/servers";
+}
+
+function serverCard(agent) {
+  const item = makeElement("li", "server-card");
+  item.dataset.agentId = agent.agent_id;
+
+  const identity = makeElement("div", "server-card-identity");
+  identity.append(makeElement("span", "server-card-name", agentLabel(agent)));
+  if (agent.display_name) {
+    identity.append(makeElement("span", "server-card-host", displayValue(agent.hostname)));
+  }
+
+  const head = makeElement("div", "server-card-head");
+  head.append(identity, presenceBadge(agent.presence));
+
+  const facts = makeElement("dl", "server-card-facts");
+  const mode = document.createDocumentFragment();
+  mode.append(makeElement("span", "", responseModeLabel(agent.effective_response_mode)));
+  const chip = syncChip(agent);
+  if (chip) mode.append(chip);
+  else if (isLocallyManaged(agent)) mode.append(makeElement("span", "sync-chip is-local", "Administración local"));
+  appendDetail(facts, "Modo", mode);
+  const lastSeen = document.createElement("time");
+  lastSeen.textContent = formatRelativeTimestamp(agent.last_seen_at);
+  if (agent.last_seen_at) {
+    lastSeen.dateTime = agent.last_seen_at;
+    lastSeen.title = formatTimestamp(agent.last_seen_at);
+  }
+  appendDetail(facts, "Último contacto", lastSeen);
+  appendDetail(facts, "Versión", agentVersionLabel(agent));
+
+  const open = makeElement("a", "secondary-action server-card-open", "Ver servidor");
+  open.href = serverPath(agent.agent_id);
+  open.dataset.keepQuery = "true";
+  open.addEventListener("click", (event) => {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+    event.preventDefault();
+    showServerView(agent.agent_id, { push: true });
+  });
+
+  item.append(head, facts, open);
+  return item;
+}
+
+function serverListState(message, error = false) {
+  return makeElement("li", error ? "state-cell is-error" : "state-cell", message);
+}
+
 function renderAgents(agents) {
   renderServersSummary(agents);
   elements.serversCount.textContent = `${agents.length} ${agents.length === 1 ? "servidor" : "servidores"}`;
   if (agents.length === 0) {
     elements.serversBody.replaceChildren(
-      stateRow(5, "No tiene servidores conectados. Use Conectar servidor para comenzar."),
+      serverListState("No tiene servidores conectados. Use Conectar servidor para comenzar."),
     );
-    return;
+  } else {
+    elements.serversBody.replaceChildren(...agents.map(serverCard));
   }
 
-  const rows = agents.map((agent) => {
-    const row = document.createElement("tr");
-    const presence = ["online", "offline", "unknown"].includes(agent.presence)
-      ? agent.presence
-      : "unknown";
+  if (serverViewId) {
+    const agent = agents.find((item) => item.agent_id === serverViewId);
+    if (agent) {
+      renderServerView(agent);
+      loadServerActivity(agent.agent_id);
+    } else {
+      showServerList({ push: false, replace: true });
+      showServersAlert("El servidor solicitado no existe o no tiene acceso a él.");
+    }
+  }
+}
 
-    const hostCell = labeledCell("Servidor");
-    hostCell.append(makeElement("span", "server-hostname", displayValue(agent.hostname)));
-    const actions = makeElement("div", "server-actions");
-    const incidentsLink = makeElement("a", "", "Ver incidentes");
-    incidentsLink.href = `/dashboard/incidents?${new URLSearchParams({ agent_id: agent.agent_id }).toString()}`;
-    incidentsLink.dataset.keepQuery = "true";
-    actions.append(incidentsLink);
-    hostCell.append(actions);
+// ----------------------------------------------------------- vista dedicada
 
-    const agentCell = labeledCell("Agent ID", "monospace", shortAgentId(agent.agent_id));
-    agentCell.title = displayValue(agent.agent_id, "");
+function showServerDetailAlert(message, error = true) {
+  elements.serverDetailAlert.textContent = message;
+  elements.serverDetailAlert.classList.toggle("is-success", !error);
+  elements.serverDetailAlert.hidden = false;
+}
 
-    row.dataset.agentId = agent.agent_id;
-    row.append(
-      hostCell,
-      badgeCell("Estado", presenceBadge(presence)),
-      timeCell("Último contacto", agent.last_seen_at, true),
-      agentCell,
-      timeCell("Registrado", agent.registered_at),
+function showServerView(agentId, { push = false } = {}) {
+  if (serverViewId !== agentId) {
+    serverModeSelection = null;
+    serverNameEditing = false;
+  }
+  serverViewId = agentId;
+  if (push) window.history.pushState(null, "", serverPath(agentId));
+  elements.serverDetailAlert.hidden = true;
+  elements.serversListView.hidden = true;
+  elements.serverView.hidden = false;
+  const agent = knownAgents.find((item) => item.agent_id === agentId);
+  if (agent) {
+    renderServerView(agent);
+    loadServerActivity(agentId);
+  }
+  window.scrollTo({ top: 0 });
+  elements.serverViewTitle.focus({ preventScroll: true });
+}
+
+function showServerList({ push = false, replace = false } = {}) {
+  serverViewId = null;
+  serverModeSelection = null;
+  serverNameEditing = false;
+  serverActivityController?.abort();
+  if (push) window.history.pushState(null, "", serverPath(null));
+  if (replace) window.history.replaceState(null, "", serverPath(null));
+  elements.serverView.hidden = true;
+  elements.serversListView.hidden = false;
+  document.title = `${elements.serversTitle.textContent} | Nexora`;
+}
+
+function syncServerViewWithLocation() {
+  if (currentModule.key !== "servers") return;
+  const agentId = new URLSearchParams(window.location.search).get(SERVER_QUERY_PARAM);
+  if (agentId) showServerView(agentId);
+  else showServerList();
+}
+
+function renderServerView(agent) {
+  const isAdmin = authContext?.role === "superadmin";
+  document.title = `${agentLabel(agent)} | Nexora`;
+  elements.serverViewTitle.textContent = agentLabel(agent);
+  elements.serverViewHostname.textContent = agent.display_name ? displayValue(agent.hostname) : "";
+  elements.serverViewHostname.hidden = !agent.display_name;
+  elements.serverViewPresence.replaceChildren(presenceBadge(agent.presence));
+
+  // Nombre: lectura por defecto; edición solo al pulsar Editar (superadmin).
+  elements.serverNameEdit.hidden = !isAdmin || serverNameEditing;
+  elements.serverNameDisplay.hidden = serverNameEditing;
+  elements.serverNameForm.hidden = !isAdmin || !serverNameEditing;
+
+  const general = elements.serverGeneral;
+  general.replaceChildren();
+  appendDetail(general, "Estado", presenceLabel(agent.presence));
+  const lastSeen = document.createDocumentFragment();
+  lastSeen.append(makeElement("span", "", formatRelativeTimestamp(agent.last_seen_at)));
+  if (agent.last_seen_at) lastSeen.append(makeElement("span", "cell-secondary", formatTimestamp(agent.last_seen_at)));
+  appendDetail(general, "Último contacto", lastSeen);
+  appendDetail(general, "Versión del agente", agentVersionLabel(agent));
+  appendDetail(general, "Conectado desde", formatTimestamp(agent.registered_at));
+
+  renderServerSecurity(agent, isAdmin);
+  renderServerTechnical(agent);
+}
+
+function renderServerSecurity(agent, isAdmin) {
+  const current = elements.serverSecurityCurrent;
+  current.replaceChildren();
+  const mode = makeElement("div", "security-current-mode");
+  mode.append(
+    makeElement("span", "security-label", "Modo actual"),
+    makeElement("strong", "", responseModeLabel(agent.effective_response_mode)),
+  );
+  const chip = syncChip(agent);
+  if (chip) mode.append(chip);
+  current.append(mode);
+
+  if (agent.config_status === "pending") {
+    current.append(
+      makeElement(
+        "p",
+        "security-line",
+        `Solicitado: ${responseModeLabel(agent.desired_response_mode)}. ${
+          agent.presence === "online"
+            ? "El servidor lo aplicará en su próximo contacto."
+            : "Se aplicará cuando el servidor vuelva a conectarse."
+        }`,
+      ),
     );
-    return row;
+  } else if (isLocalRejection(agent)) {
+    current.append(makeElement("p", "security-line", "Este servidor utiliza administración local."));
+  } else if (agent.config_status === "rejected") {
+    current.append(
+      makeElement(
+        "p",
+        "security-line",
+        `Solicitado: ${responseModeLabel(agent.desired_response_mode)}. ${displayValue(
+          agent.config_status_reason,
+          "El servidor no aplicó el cambio.",
+        )}`,
+      ),
+    );
+  }
+  const capability = capabilityText(agent);
+  current.append(makeElement("p", `security-line mode-capability ${capability.state}`.trim(), capability.text));
+
+  // Administración local: política válida, sin tono de alerta.
+  const local = isLocallyManaged(agent);
+  elements.serverModeLocal.hidden = !local;
+  elements.serverModeLocalHelp.textContent = centralControlAvailable(agent)
+    ? "Un administrador del servidor debe habilitar la gestión del modo desde Nexora en la configuración del agente y reiniciar el servicio. Los permisos de bloqueo del servidor se conservan."
+    : "Este servidor tiene un agente anterior a Nexora v1.1. Actualícelo para administrar el modo desde Nexora.";
+
+  const canEdit = isAdmin && !local;
+  // Sin selección en curso se marca lo solicitado mientras se aplica; si el
+  // servidor se administra localmente o rechazó el cambio, lo que realmente usa.
+  const followsEffective = local || agent.config_status === "rejected";
+  const baseline = (followsEffective ? agent.effective_response_mode : agent.desired_response_mode)
+    ?? agent.effective_response_mode;
+  const selected = serverModeSelection ?? baseline;
+  elements.serverModeOptions.disabled = !canEdit;
+  elements.serverModeOptions.querySelectorAll("button[data-mode]").forEach((button) => {
+    const value = button.dataset.mode;
+    button.disabled = !canEdit;
+    button.setAttribute("aria-pressed", String(value === selected));
+    button.classList.toggle("is-effective", value === agent.effective_response_mode);
   });
-  elements.serversBody.replaceChildren(...rows);
+
+  // Tras un rechazo se permite volver a solicitar el mismo modo.
+  const changed = serverModeSelection !== null && serverModeSelection !== baseline;
+  elements.serverModeActions.hidden = !canEdit || !changed;
+  elements.serverModeSubmit.disabled = !changed;
+
+  let note = "";
+  if (!isAdmin) note = "Solo un superadmin puede cambiar el modo de respuesta.";
+  else if (canEdit) note = "El cambio se envía al servidor por su canal seguro. Los permisos de bloqueo locales del servidor siempre tienen prioridad.";
+  elements.serverModeNote.textContent = note;
+  elements.serverModeNote.hidden = !note;
+}
+
+function renderServerTechnical(agent) {
+  const technical = elements.serverTechnical;
+  technical.replaceChildren();
+  appendDetail(technical, "Hostname", displayValue(agent.hostname), "monospace");
+  appendDetail(technical, "Agent ID", displayValue(agent.agent_id), "monospace");
+  appendDetail(
+    technical,
+    "Origen de configuración",
+    agent.config_source === "central" ? "Nexora (central)" : agent.config_source === "local" ? "Local" : "Sin reporte",
+  );
+  appendDetail(technical, "Modo solicitado", agent.desired_response_mode ? responseModeLabel(agent.desired_response_mode) : "Sin solicitud");
+  appendDetail(
+    technical,
+    "Revisión de configuración",
+    `${agent.config_revision} solicitada · ${agent.applied_config_revision} aplicada`,
+  );
+  appendDetail(
+    technical,
+    "Último resultado",
+    agent.config_status
+      ? `${agent.config_status} · revisión ${agent.config_status_revision ?? "—"}`
+      : "Sin configuración central",
+    "monospace",
+  );
+  if (agent.config_status_reason) appendDetail(technical, "Motivo", agent.config_status_reason);
+  appendDetail(technical, "Último reporte", formatTimestamp(agent.config_reported_at));
+  appendDetail(technical, "Protocolo de configuración", agent.config_protocol ?? "No soportado");
+}
+
+function activityItem(primary, secondary, badge, href) {
+  const item = makeElement("li", "activity-item");
+  const text = makeElement("div", "activity-text");
+  if (href) {
+    const link = makeElement("a", "activity-primary", primary);
+    link.href = href;
+    link.dataset.keepQuery = "true";
+    text.append(link);
+  } else {
+    text.append(makeElement("span", "activity-primary", primary));
+  }
+  text.append(makeElement("span", "cell-secondary", secondary));
+  item.append(badge, text);
+  return item;
+}
+
+async function loadServerActivity(agentId) {
+  serverActivityController?.abort();
+  const controller = new AbortController();
+  serverActivityController = controller;
+  const query = new URLSearchParams({ agent_id: agentId, limit: "5" }).toString();
+  elements.serverIncidentsLink.href = `/dashboard/incidents?${new URLSearchParams({ agent_id: agentId }).toString()}`;
+  elements.serverEventsLink.href = `/dashboard/events?${new URLSearchParams({ agent_id: agentId }).toString()}`;
+  const [incidents, events] = await Promise.allSettled([
+    fetchJson(`/incidents?${query}`, controller.signal),
+    fetchJson(`/events?${query}`, controller.signal),
+  ]);
+  if (controller.signal.aborted || serverViewId !== agentId) return;
+
+  const incidentItems = incidents.status === "fulfilled" && Array.isArray(incidents.value?.items)
+    ? incidents.value.items
+    : null;
+  if (incidentItems === null) {
+    elements.serverIncidents.replaceChildren(serverListState("No fue posible cargar los incidentes.", true));
+  } else if (incidentItems.length === 0) {
+    elements.serverIncidents.replaceChildren(serverListState("Sin incidentes registrados."));
+  } else {
+    elements.serverIncidents.replaceChildren(
+      ...incidentItems.map((incident) =>
+        activityItem(
+          typeLabel(incident.incident_type),
+          `${formatRelativeTimestamp(incident.last_activity_at)} · ${displayValue(incident.source_ip)}`,
+          severityBadge(incident.severity),
+          incidentHref(incident),
+        ),
+      ),
+    );
+  }
+
+  const eventItems = events.status === "fulfilled" && Array.isArray(events.value) ? events.value : null;
+  if (eventItems === null) {
+    elements.serverEvents.replaceChildren(serverListState("No fue posible cargar los eventos.", true));
+  } else if (eventItems.length === 0) {
+    elements.serverEvents.replaceChildren(serverListState("Sin eventos registrados."));
+  } else {
+    elements.serverEvents.replaceChildren(
+      ...eventItems.map((event) =>
+        activityItem(
+          typeLabel(event.event_type),
+          formatRelativeTimestamp(event.timestamp),
+          severityBadge(event.severity),
+          null,
+        ),
+      ),
+    );
+  }
+}
+
+function replaceKnownAgent(updated) {
+  knownAgents = knownAgents.map((agent) => (agent.agent_id === updated.agent_id ? updated : agent));
+  renderAgentSelector();
+  renderAgents(knownAgents);
+}
+
+function currentServer() {
+  return knownAgents.find((item) => item.agent_id === serverViewId) ?? null;
+}
+
+function confirmAutomaticMode(agent) {
+  return new Promise((resolve) => {
+    const dialog = document.createElement("dialog");
+    dialog.className = "confirm-dialog";
+    dialog.setAttribute("aria-labelledby", "confirm-automatic-title");
+    const body = makeElement("div", "confirm-body");
+    const title = makeElement("h2", "", "Activar modo automático");
+    title.id = "confirm-automatic-title";
+    body.append(title);
+    body.append(
+      makeElement(
+        "p",
+        "confirm-lead",
+        `${agentLabel(agent)} podrá bloquear temporalmente direcciones IP sin esperar aprobación.`,
+      ),
+    );
+    const notes = makeElement("ul", "confirm-list");
+    [
+      "Solo bloquea si el servidor lo tiene permitido en su configuración local; si no, únicamente simula.",
+      "Nexora mantiene activas las protecciones para direcciones administrativas, Tailscale, red local, gateway y sesiones SSH activas.",
+      "Los bloqueos son temporales y quedan registrados en Incidentes.",
+    ].forEach((text) => notes.append(makeElement("li", "", text)));
+    body.append(notes);
+    const cancel = makeElement("button", "secondary-action", "Cancelar");
+    cancel.type = "button";
+    const confirm = makeElement("button", "primary-action", "Activar automático");
+    confirm.type = "button";
+    const row = makeElement("div", "action-buttons");
+    row.append(cancel, confirm);
+    body.append(row);
+    dialog.append(body);
+
+    let result = false;
+    cancel.addEventListener("click", () => dialog.close());
+    confirm.addEventListener("click", () => {
+      result = true;
+      dialog.close();
+    });
+    dialog.addEventListener("close", () => {
+      dialog.remove();
+      resolve(result);
+    });
+    document.body.append(dialog);
+    dialog.showModal();
+    cancel.focus();
+  });
+}
+
+function setServerNameEditing(editing) {
+  serverNameEditing = editing;
+  const agent = currentServer();
+  if (editing && agent) {
+    elements.serverNameInput.value = agent.display_name ?? "";
+  }
+  if (agent) renderServerView(agent);
+  if (editing) {
+    elements.serverNameInput.focus();
+    elements.serverNameInput.select();
+  } else {
+    elements.serverNameEdit.focus();
+  }
+}
+
+function configureServerDetail() {
+  elements.serverBack.addEventListener("click", (event) => {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+    event.preventDefault();
+    showServerList({ push: true });
+  });
+  window.addEventListener("popstate", syncServerViewWithLocation);
+
+  elements.serverNameEdit.addEventListener("click", () => setServerNameEditing(true));
+  elements.serverNameCancel.addEventListener("click", () => setServerNameEditing(false));
+  elements.serverNameInput.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") setServerNameEditing(false);
+  });
+
+  elements.serverNameForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const agentId = serverViewId;
+    if (!agentId) return;
+    elements.serverDetailAlert.hidden = true;
+    const submit = elements.serverNameForm.querySelector("button[type='submit']");
+    submit.disabled = true;
+    try {
+      const updated = await authenticatedRequest("PATCH", `/agents/${encodeURIComponent(agentId)}`, {
+        display_name: elements.serverNameInput.value,
+      });
+      serverNameEditing = false;
+      replaceKnownAgent(updated);
+      showServerDetailAlert("Nombre actualizado.", false);
+    } catch (error) {
+      showServerDetailAlert(error.message);
+    } finally {
+      submit.disabled = false;
+    }
+  });
+
+  elements.serverModeOptions.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-mode]");
+    if (!button || button.disabled || !serverViewId) return;
+    serverModeSelection = button.dataset.mode;
+    const agent = currentServer();
+    if (agent) renderServerSecurity(agent, authContext?.role === "superadmin");
+  });
+
+  elements.serverModeCancel.addEventListener("click", () => {
+    serverModeSelection = null;
+    const agent = currentServer();
+    if (agent) renderServerSecurity(agent, authContext?.role === "superadmin");
+  });
+
+  elements.serverModeSubmit.addEventListener("click", async () => {
+    const agent = currentServer();
+    if (!agent || !serverModeSelection) return;
+    if (serverModeSelection === "automatic" && !(await confirmAutomaticMode(agent))) return;
+    elements.serverDetailAlert.hidden = true;
+    elements.serverModeSubmit.disabled = true;
+    try {
+      const updated = await authenticatedRequest(
+        "PUT",
+        `/agents/${encodeURIComponent(agent.agent_id)}/response-mode`,
+        { response_mode: serverModeSelection, expected_revision: agent.config_revision },
+      );
+      serverModeSelection = null;
+      replaceKnownAgent(updated);
+      showServerDetailAlert("Cambio enviado. El servidor lo aplicará en su próximo contacto.", false);
+    } catch (error) {
+      showServerDetailAlert(error.message);
+      elements.serverModeSubmit.disabled = false;
+      // 409: otra persona cambió la configuración o el agente no admite
+      // administración central. Se recargan los datos sin perder la selección.
+      if (error.status === 409) refreshAndReschedule();
+    }
+  });
 }
 
 function showUsersAlert(message, error = true) {
@@ -1816,8 +2366,12 @@ function showUsersAlert(message, error = true) {
 }
 
 async function authenticatedPost(path, body) {
+  return authenticatedRequest("POST", path, body);
+}
+
+async function authenticatedRequest(method, path, body) {
   const response = await fetch(path, {
-    method: "POST",
+    method,
     headers: {
       Accept: "application/json",
       "Content-Type": "application/json",
@@ -1831,7 +2385,12 @@ async function authenticatedPost(path, body) {
   }
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
-    throw new Error(error.detail ?? `HTTP ${response.status}`);
+    const detail = Array.isArray(error.detail)
+      ? error.detail.map((item) => item?.msg).filter(Boolean).join(" ")
+      : error.detail;
+    const failure = new Error(detail || `HTTP ${response.status}`);
+    failure.status = response.status;
+    throw failure;
   }
   if (response.status === 204) return null;
   return response.json();
@@ -2071,7 +2630,7 @@ function renderModuleResult(key, result) {
     if (validList) renderAgents(result.value);
     else {
       elements.serversBody.replaceChildren(
-        stateRow(5, "No fue posible cargar los servidores.", true),
+        serverListState("No fue posible cargar los servidores.", true),
       );
     }
   }
@@ -2132,7 +2691,7 @@ async function refreshDashboard() {
       }
       if (currentModule.key === "servers") {
         elements.serversBody.replaceChildren(
-          stateRow(5, "No fue posible cargar los servidores.", true),
+          serverListState("No fue posible cargar los servidores.", true),
         );
       }
     }
@@ -2294,6 +2853,20 @@ function showServersAlert(message, error = true) {
   elements.serversAlert.hidden = false;
 }
 
+function setConnectStep(step) {
+  // Flujo preparado: generar comando -> esperando conexión -> conectado.
+  // "Conectado" se activará cuando exista el instalador de un comando.
+  const order = ["command", "waiting", "connected"];
+  const index = order.indexOf(step);
+  elements.connectSteps.querySelectorAll("li[data-step]").forEach((item) => {
+    const position = order.indexOf(item.dataset.step);
+    item.classList.toggle("is-done", position < index);
+    item.classList.toggle("is-current", position === index);
+    if (position === index) item.setAttribute("aria-current", "step");
+    else item.removeAttribute("aria-current");
+  });
+}
+
 function configureServerActions() {
   elements.connectServerButton.addEventListener("click", async () => {
     elements.serversAlert.hidden = true;
@@ -2303,6 +2876,7 @@ function configureServerActions() {
       elements.registrationCommand.textContent = registration.command;
       elements.registrationExpiresAt.textContent = formatTimestamp(registration.expires_at);
       elements.registrationPanel.hidden = false;
+      setConnectStep("waiting");
       elements.copyRegistrationCommand.focus();
     } catch (error) {
       showServersAlert(error.message);
@@ -2331,6 +2905,8 @@ async function initializeDashboard() {
   configureAgentSelector();
   configureAccountActions();
   configureServerActions();
+  configureServerDetail();
+  syncServerViewWithLocation();
   elements.refreshButton.addEventListener("click", refreshAndReschedule);
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) stopAutoRefresh();

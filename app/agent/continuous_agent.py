@@ -8,6 +8,7 @@ import signal
 import socket
 import subprocess
 import time
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,19 @@ except ImportError:  # pragma: no cover - depende de la plataforma
 from app.agent.approvals import ApprovalInstruction, ResponseApprovalClient
 from app.agent.event_store import LocalEventStore
 from app.agent.heartbeat import AgentHeartbeatSender, AgentHeartbeatWorker
+from app.agent.remote_config import (
+    APPLY_FAILED_REASON,
+    LOCAL_MANAGEMENT_REASON,
+    RESPONSE_MODES,
+    SAFE_FALLBACK_MODE,
+    ConfigNotice,
+    ConfigStateReport,
+    LocalResponseConfig,
+    LocalResponseConfigError,
+    RemoteConfigCoordinator,
+    load_local_response_config,
+    save_local_response_config,
+)
 from app.agent.sync import AgentEventSynchronizer, AgentEventSyncWorker
 from app.core.config import AgentSettings, load_agent_settings
 from app.core.events import SecurityEvent
@@ -80,7 +94,14 @@ class ContinuousAgent:
         interval: int | None = None,
         settings: AgentSettings | None = None,
     ) -> None:
-        self.settings = settings or load_agent_settings()
+        loaded_settings = settings or load_agent_settings()
+        startup_notices: list[ConfigNotice] = []
+        initial_revision = 0
+        if loaded_settings.response_mode_source == "central":
+            loaded_settings, initial_revision, startup_notices = (
+                self._initial_central_settings(loaded_settings)
+            )
+        self.settings = loaded_settings
         self.interval = (
             interval
             if interval is not None and interval > 0
@@ -89,22 +110,7 @@ class ContinuousAgent:
         self.running = True
         self.hostname = platform.node()
         self.ssh_collector = SSHJournalCollector()
-        self.response_policy = ResponsePolicy(
-            mode=self.settings.response_mode,
-            trusted_admin_ips=set(self.settings.trusted_admin_ips),
-            allow_temporary_ip_block=(self.settings.allow_temporary_ip_block),
-            temporary_block_seconds=(self.settings.temporary_block_seconds),
-            block_scope=self.settings.response_block_scope,
-            allow_temporary_ip_port_block=(
-                self.settings.allow_temporary_ip_port_block
-            ),
-            ssh_port=self.settings.ssh_port,
-            escalation_enabled=self.settings.response_escalation_enabled,
-            escalation_seconds=self.settings.response_escalation_seconds,
-            escalation_window_seconds=(
-                self.settings.response_escalation_window_seconds
-            ),
-        )
+        self.response_policy = self._build_response_policy(self.settings)
         self.response_engine = ResponsePolicyEngine(self.response_policy)
         self.response_executor = self._build_response_executor()
         # Ejecutor separado para acciones aprobadas en assisted: las
@@ -141,9 +147,16 @@ class ContinuousAgent:
                 ),
             )
         )
+        self.remote_config = RemoteConfigCoordinator(
+            self.settings,
+            processed_revision=initial_revision,
+        )
+        for notice in startup_notices:
+            self.remote_config.add_notice(notice)
         self.heartbeat_sender = AgentHeartbeatSender(
             self.settings,
             hostname=self.hostname,
+            config_listener=self.remote_config,
         )
         self.heartbeat_worker = AgentHeartbeatWorker(self.heartbeat_sender)
         notification_settings = load_notification_settings()
@@ -160,26 +173,87 @@ class ContinuousAgent:
             ),
         )
 
-    def _build_response_executor(self) -> ResponseExecutor:
-        real_execution_enabled = self.settings.response_mode == "automatic" and (
-            self.settings.allow_temporary_ip_block
-            or self.settings.allow_temporary_ip_port_block
+    @staticmethod
+    def _initial_central_settings(
+        settings: AgentSettings,
+    ) -> tuple[AgentSettings, int, list[ConfigNotice]]:
+        """Modo de partida cuando el central gobierna response_mode.
+
+        - Sin archivo local: se parte del modo de agent.env (revisión 0).
+        - Archivo válido: último modo central aplicado.
+        - Archivo corrupto o inseguro: no se usa su contenido y se parte de
+          audit_only. Nunca se cae hacia automatic.
+        """
+
+        try:
+            stored = load_local_response_config(settings.response_config_file)
+        except LocalResponseConfigError as exc:
+            notice = ConfigNotice(
+                event_type="AGENT_CONFIG_INVALID",
+                description=(
+                    "La configuración de respuesta local no es válida; "
+                    "se usa audit_only."
+                ),
+                evidence={
+                    "source": "local_file",
+                    "path": str(settings.response_config_file),
+                    "error": str(exc),
+                    "fallback_mode": SAFE_FALLBACK_MODE,
+                },
+            )
+            return (
+                replace(settings, response_mode=SAFE_FALLBACK_MODE),
+                0,
+                [notice],
+            )
+        if stored is None:
+            return settings, 0, []
+        return (
+            replace(settings, response_mode=stored.response_mode),
+            stored.revision,
+            [],
+        )
+
+    @staticmethod
+    def _build_response_policy(settings: AgentSettings) -> ResponsePolicy:
+        return ResponsePolicy(
+            mode=settings.response_mode,
+            trusted_admin_ips=set(settings.trusted_admin_ips),
+            allow_temporary_ip_block=(settings.allow_temporary_ip_block),
+            temporary_block_seconds=(settings.temporary_block_seconds),
+            block_scope=settings.response_block_scope,
+            allow_temporary_ip_port_block=(settings.allow_temporary_ip_port_block),
+            ssh_port=settings.ssh_port,
+            escalation_enabled=settings.response_escalation_enabled,
+            escalation_seconds=settings.response_escalation_seconds,
+            escalation_window_seconds=(settings.response_escalation_window_seconds),
+        )
+
+    def _build_response_executor(
+        self,
+        settings: AgentSettings | None = None,
+        policy: ResponsePolicy | None = None,
+    ) -> ResponseExecutor:
+        settings = settings or self.settings
+        policy = policy or self.response_policy
+        real_execution_enabled = settings.response_mode == "automatic" and (
+            settings.allow_temporary_ip_block or settings.allow_temporary_ip_port_block
         )
 
         if not real_execution_enabled:
             return ResponseExecutor(
-                self.response_policy,
+                policy,
                 dry_run=True,
             )
 
-        repository = EventRepository(self.settings.database_file)
+        repository = EventRepository(settings.database_file)
 
         backend = NftablesFirewallBackend()
 
         protection_resolver = self._protection_resolver()
 
         return ResponseExecutor(
-            self.response_policy,
+            policy,
             dry_run=False,
             repository=repository,
             backend=backend,
@@ -187,6 +261,8 @@ class ContinuousAgent:
         )
 
     def _protection_resolver(self) -> ResponseProtectionResolver:
+        # trusted_admin_ips y ssh_port son exclusivamente locales: un cambio
+        # de modo nunca altera las protecciones.
         if self.settings.ssh_port == 22:
             # Llamada idéntica a la histórica cuando SSH usa el puerto 22.
             return ResponseProtectionResolver(
@@ -196,6 +272,183 @@ class ContinuousAgent:
         return ResponseProtectionResolver(
             trusted_admin_ips=(self.settings.trusted_admin_ips),
             ssh_ports=(self.settings.ssh_port,),
+        )
+
+    @staticmethod
+    def _blocking_enabled(settings: AgentSettings) -> bool:
+        """Si el modo efectivo puede producir bloqueos reales.
+
+        Los allow flags siguen siendo exclusivamente locales: un modo
+        automatic sin ellos queda en dry-run.
+        """
+
+        allowed = (
+            settings.allow_temporary_ip_block or settings.allow_temporary_ip_port_block
+        )
+        return allowed and settings.response_mode in {"automatic", "assisted"}
+
+    def _apply_response_mode(
+        self,
+        mode: str,
+        *,
+        before_swap: Any = None,
+    ) -> None:
+        """Único punto que reconstruye todo lo que depende del modo.
+
+        Todos los componentes nuevos se construyen antes de reemplazar los
+        actuales; si algo falla, el agente conserva íntegro el estado previo.
+        Las protecciones (trusted admins, Tailscale, IP local, gateway,
+        sesiones SSH) viven en el ejecutor y el planner, no dependen del modo
+        y se reconstruyen con la misma configuración local.
+        """
+
+        if mode not in RESPONSE_MODES:
+            raise ValueError("Modo de respuesta no válido.")
+        settings = replace(self.settings, response_mode=mode)
+        policy = self._build_response_policy(settings)
+        engine = ResponsePolicyEngine(policy)
+        recurrence_tracker = RecurrenceTracker(self.event_repository, policy)
+        response_executor = self._build_response_executor(settings, policy)
+        approval_executor = self._build_approval_executor(settings, policy)
+        if before_swap is not None:
+            before_swap()
+        self.settings = settings
+        self.response_policy = policy
+        self.response_engine = engine
+        self.recurrence_tracker = recurrence_tracker
+        self.response_executor = response_executor
+        self.approval_executor = approval_executor
+        self.approval_client.settings = settings
+
+    def _config_state_report(
+        self,
+        *,
+        revision: int,
+        status: str,
+        reason: str | None = None,
+    ) -> ConfigStateReport:
+        return ConfigStateReport(
+            applied_revision=revision,
+            effective_response_mode=self.settings.response_mode,
+            config_source=self.settings.response_mode_source,
+            blocking_enabled=self._blocking_enabled(self.settings),
+            status=status,  # type: ignore[arg-type]
+            reason=reason,
+        )
+
+    def _process_remote_config(self) -> None:
+        """Aplica o rechaza la configuración central pendiente.
+
+        Se ejecuta solo al inicio de run_once (hilo principal).
+        """
+
+        try:
+            for notice in self.remote_config.take_notices():
+                self.emit(
+                    category="agent",
+                    event_type=notice.event_type,
+                    severity="medium",
+                    description=notice.description,
+                    evidence=dict(notice.evidence),
+                )
+
+            pending = self.remote_config.take_pending()
+            if pending is not None and pending.response_mode is not None:
+                self._handle_pending_config(pending.revision, pending.response_mode)
+
+            self.remote_config.flush_report()
+        except Exception as exc:
+            try:
+                self.emit(
+                    category="agent",
+                    event_type="AGENT_CONFIG_ERROR",
+                    severity="medium",
+                    description="Falló el procesamiento de la configuración remota.",
+                    evidence={"error": " ".join(str(exc).split())[:300]},
+                )
+            except Exception:
+                pass
+
+    def _handle_pending_config(self, revision: int, requested_mode: str) -> None:
+        previous_mode = self.settings.response_mode
+        self.remote_config.mark_processed(revision)
+
+        if self.settings.response_mode_source != "central":
+            self.remote_config.queue_report(
+                self._config_state_report(
+                    revision=revision,
+                    status="rejected",
+                    reason=LOCAL_MANAGEMENT_REASON,
+                )
+            )
+            self.emit(
+                category="agent",
+                event_type="AGENT_CONFIG_REJECTED",
+                severity="low",
+                description=(
+                    "Se rechazó un cambio central de modo: el agente usa "
+                    "configuración local."
+                ),
+                evidence={
+                    "revision": revision,
+                    "requested_mode": requested_mode,
+                    "effective_mode": previous_mode,
+                    "reason": LOCAL_MANAGEMENT_REASON,
+                },
+            )
+            return
+
+        try:
+            self._apply_response_mode(
+                requested_mode,
+                before_swap=lambda: save_local_response_config(
+                    self.settings.response_config_file,
+                    LocalResponseConfig(
+                        revision=revision,
+                        response_mode=requested_mode,
+                    ),
+                ),
+            )
+        except Exception as exc:
+            reason = APPLY_FAILED_REASON
+            self.remote_config.queue_report(
+                self._config_state_report(
+                    revision=revision,
+                    status="rejected",
+                    reason=reason,
+                )
+            )
+            self.emit(
+                category="agent",
+                event_type="AGENT_CONFIG_REJECTED",
+                severity="medium",
+                description=reason,
+                evidence={
+                    "revision": revision,
+                    "requested_mode": requested_mode,
+                    "effective_mode": previous_mode,
+                    "error": " ".join(str(exc).split())[:300],
+                },
+            )
+            return
+
+        self.remote_config.queue_report(
+            self._config_state_report(revision=revision, status="applied")
+        )
+        self.emit(
+            category="agent",
+            event_type="AGENT_CONFIG_APPLIED",
+            severity="medium",
+            description=(
+                f"Modo de respuesta aplicado desde el central: {requested_mode}."
+            ),
+            evidence={
+                "revision": revision,
+                "previous_mode": previous_mode,
+                "effective_mode": requested_mode,
+                "blocking_enabled": self._blocking_enabled(self.settings),
+                "config_source": "central",
+            },
         )
 
     def _ensure_runtime_dirs(self) -> None:
@@ -1093,19 +1346,24 @@ class ContinuousAgent:
             source="response-approvals",
         )
 
-    def _build_approval_executor(self) -> ResponseExecutor | None:
+    def _build_approval_executor(
+        self,
+        settings: AgentSettings | None = None,
+        policy: ResponsePolicy | None = None,
+    ) -> ResponseExecutor | None:
+        settings = settings or self.settings
+        policy = policy or self.response_policy
         allowed = (
-            self.settings.allow_temporary_ip_block
-            or self.settings.allow_temporary_ip_port_block
+            settings.allow_temporary_ip_block or settings.allow_temporary_ip_port_block
         )
 
-        if self.settings.response_mode != "assisted" or not allowed:
+        if settings.response_mode != "assisted" or not allowed:
             return None
 
         return ResponseExecutor(
-            self.response_policy,
+            policy,
             dry_run=False,
-            repository=EventRepository(self.settings.database_file),
+            repository=EventRepository(settings.database_file),
             backend=NftablesFirewallBackend(),
             protection_resolver=self._protection_resolver(),
         )
@@ -1660,6 +1918,9 @@ class ContinuousAgent:
         return state
 
     def run_once(self) -> None:
+        # Configuración remota: único punto donde puede cambiar el modo.
+        self._process_remote_config()
+
         # Antes de cualquier retorno temprano del ciclo.
         self._reconcile_expired_response_blocks()
 
@@ -1716,6 +1977,14 @@ class ContinuousAgent:
 
     def run_forever(self) -> None:
         self.event_repository.initialize()
+        # Estado inicial para el central (modo efectivo y origen). Lo envía
+        # el heartbeat tras su primer contacto; un central v1.0 lo ignora.
+        self.remote_config.queue_report(
+            self._config_state_report(
+                revision=self.remote_config.processed_revision,
+                status="applied",
+            )
+        )
         self.event_sync_worker.start()
         self.heartbeat_worker.start()
         try:

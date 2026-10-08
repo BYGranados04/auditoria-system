@@ -14,6 +14,9 @@ class AgentSettings:
     log_dir: Path
 
     response_mode: str = "audit_only"
+    # Quién manda sobre response_mode: "local" (agent.env, por defecto) o
+    # "central" (dashboard vía configuración remota autenticada).
+    response_mode_source: str = "local"
     trusted_admin_ips: tuple[str, ...] = ()
     allow_temporary_ip_block: bool = False
     temporary_block_seconds: int = 900
@@ -58,6 +61,10 @@ class AgentSettings:
     @property
     def evidence_dir(self) -> Path:
         return self.state_dir / "evidence"
+
+    @property
+    def response_config_file(self) -> Path:
+        return self.state_dir / "response_config.json"
 
 
 def _positive_integer(name: str, default: int) -> int:
@@ -143,6 +150,13 @@ def _response_mode() -> str:
     return "audit_only"
 
 
+def _response_mode_source() -> str:
+    raw = os.getenv("AUDITORIA_RESPONSE_MODE_SOURCE", "local").strip().lower()
+
+    # Cualquier valor desconocido conserva la autoridad local (agent.env).
+    return raw if raw in {"local", "central"} else "local"
+
+
 def _block_scope() -> str:
     raw = os.getenv("AUDITORIA_RESPONSE_BLOCK_SCOPE", "ip").strip().lower()
 
@@ -214,6 +228,7 @@ def load_agent_settings() -> AgentSettings:
             )
         ),
         response_mode=_response_mode(),
+        response_mode_source=_response_mode_source(),
         trusted_admin_ips=_trusted_admin_ips(),
         allow_temporary_ip_block=_boolean(
             "AUDITORIA_ALLOW_TEMPORARY_IP_BLOCK",

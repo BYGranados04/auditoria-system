@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import platform
 import threading
 from dataclasses import dataclass
+from typing import Protocol
 
 from app.agent.registration import (
     AgentIdentityError,
@@ -10,7 +12,15 @@ from app.agent.registration import (
     load_identity,
 )
 from app.agent.sync import SyncTransport, SyncTransportError, UrllibSyncTransport
+from app.agent.version import agent_version
 from app.core.config import AgentSettings
+
+MAX_HEARTBEAT_RESPONSE_BYTES = 65_536
+MAX_CONFIG_REVISION = 2_147_483_647
+
+
+class HeartbeatConfigListener(Protocol):
+    def on_heartbeat(self, revision_hint: int | None) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -18,6 +28,30 @@ class HeartbeatRunResult:
     sent: bool = False
     skipped: bool = False
     next_delay_seconds: int = 0
+    config_revision: int | None = None
+
+
+def _config_revision(body: bytes) -> int | None:
+    """Revisión de configuración anunciada por un central v1.1.
+
+    Un central v1.0 no la incluye: el resultado es ``None`` y el agente sigue
+    con su configuración local.
+    """
+
+    if not body or len(body) > MAX_HEARTBEAT_RESPONSE_BYTES:
+        return None
+    try:
+        data = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    value = data.get("config_revision") if isinstance(data, dict) else None
+    if (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and 0 <= value <= MAX_CONFIG_REVISION
+    ):
+        return value
+    return None
 
 
 class AgentHeartbeatSender:
@@ -27,10 +61,22 @@ class AgentHeartbeatSender:
         *,
         transport: SyncTransport | None = None,
         hostname: str | None = None,
+        version: str | None = None,
+        config_listener: HeartbeatConfigListener | None = None,
     ) -> None:
         self.settings = settings
         self.transport = transport or UrllibSyncTransport()
         self.hostname = hostname or platform.node()
+        self.version = version if version is not None else agent_version()
+        self.config_listener = config_listener
+
+    def _payload(self) -> dict[str, object]:
+        # agent_version ya era aceptado por el central v1.0, por lo que un
+        # agente v1.1 no rompe el heartbeat contra un central anterior.
+        payload: dict[str, object] = {"hostname": self.hostname}
+        if self.version:
+            payload["agent_version"] = self.version
+        return payload
 
     @property
     def _maximum_delay(self) -> int:
@@ -55,7 +101,7 @@ class AgentHeartbeatSender:
         try:
             response = self.transport.post_json(
                 central_heartbeat_url(identity.central_url),
-                {"hostname": self.hostname},
+                self._payload(),
                 headers={
                     "Accept": "application/json",
                     "Content-Type": "application/json",
@@ -73,9 +119,17 @@ class AgentHeartbeatSender:
             )
 
         if response.status_code == 200:
+            revision = _config_revision(response.body)
+            if self.config_listener is not None:
+                try:
+                    self.config_listener.on_heartbeat(revision)
+                except Exception:
+                    # La configuración remota nunca debe romper el heartbeat.
+                    pass
             return HeartbeatRunResult(
                 sent=True,
                 next_delay_seconds=self.settings.heartbeat_interval,
+                config_revision=revision,
             )
         if response.status_code in {401, 403, 422}:
             return HeartbeatRunResult(next_delay_seconds=self._maximum_delay)

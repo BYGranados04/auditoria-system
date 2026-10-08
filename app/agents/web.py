@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import shlex
+import unicodedata
 from datetime import datetime
+from typing import Literal
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.auth.repository import (
+    CONFIG_STATUS_REASON_MAX_LENGTH,
+    AgentConfigStaleError,
     AuthConflictError,
     AuthenticatedSession,
     AuthNotFoundError,
@@ -37,6 +41,9 @@ def _configured_central_url(value: str | None) -> str:
     return normalized
 
 
+ResponseModeValue = Literal["audit_only", "assisted", "automatic"]
+
+
 class AgentResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     agent_id: str
@@ -47,6 +54,71 @@ class AgentResponse(BaseModel):
     last_seen_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    # Control plane v1.1. hostname sigue siendo la referencia técnica.
+    display_name: str | None
+    agent_version: str | None
+    config_protocol: int | None
+    desired_response_mode: ResponseModeValue | None
+    config_revision: int
+    config_updated_at: datetime | None
+    applied_config_revision: int
+    effective_response_mode: ResponseModeValue | None
+    config_source: Literal["local", "central"] | None
+    blocking_enabled: bool | None
+    config_reported_at: datetime | None
+    config_status: Literal["pending", "applied", "rejected"] | None
+    config_status_revision: int | None
+    config_status_reason: str | None
+    config_pending: bool
+
+
+class AgentDisplayNameRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # La validación fina (64 caracteres tras trim, categoría Unicode C) vive
+    # en el repositorio; aquí solo se acota el tamaño del cuerpo.
+    display_name: str | None = Field(max_length=256)
+
+
+class AgentResponseModeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    response_mode: ResponseModeValue
+    expected_revision: int = Field(strict=True, ge=0, le=2_147_483_647)
+
+
+class AgentConfigResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    revision: int
+    response_mode: ResponseModeValue | None
+
+
+class AgentConfigStateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # strict: true/false o "1" no son revisiones válidas.
+    applied_revision: int = Field(strict=True, ge=0, le=2_147_483_647)
+    effective_response_mode: ResponseModeValue
+    config_source: Literal["local", "central"]
+    blocking_enabled: bool = Field(strict=True)
+    status: Literal["applied", "rejected"]
+    # Motivo corto generado por Nexora. Se rechaza (422) si excede el límite
+    # o trae caracteres de control; el repositorio además lo sanea.
+    reason: str | None = Field(
+        default=None, max_length=CONFIG_STATUS_REASON_MAX_LENGTH
+    )
+
+    @field_validator("reason")
+    @classmethod
+    def reason_must_be_plain_text(cls, value: str | None) -> str | None:
+        if value is not None and any(
+            unicodedata.category(character).startswith("C") for character in value
+        ):
+            raise ValueError("reason contiene caracteres no permitidos.")
+        return value
+
+
+class AgentConfigStateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    accepted: bool
+    stale: bool
 
 
 class RegistrationTokenResponse(BaseModel):
@@ -75,6 +147,20 @@ class AgentHeartbeatRequest(BaseModel):
     agent_id: str | None = Field(default=None, min_length=16, max_length=255)
     hostname: str | None = Field(default=None, min_length=1, max_length=255)
     agent_version: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+def _agent_bearer(
+    credentials: HTTPAuthorizationCredentials | None,
+) -> str:
+    if (
+        credentials is None
+        or credentials.scheme.casefold() != "bearer"
+        or not credentials.credentials
+        or credentials.credentials != credentials.credentials.strip()
+        or len(credentials.credentials) > 512
+    ):
+        raise HTTPException(status_code=401, detail="Credencial no válida.")
+    return credentials.credentials
 
 
 def _agent_response(agent: dict[str, object]) -> AgentResponse:
@@ -168,14 +254,77 @@ def build_agent_router(manager: AuthManager) -> APIRouter:
             and data.agent_id != str(authenticated["agent_id"])
         ):
             raise HTTPException(status_code=401, detail="Credencial no válida.")
-        agent = manager.repository.record_agent_heartbeat(
-            credential=credentials.credentials,
-            now=manager.clock(),
-            offline_after_seconds=manager.settings.agent_offline_after_seconds,
-        )
+        try:
+            agent = manager.repository.record_agent_heartbeat(
+                credential=credentials.credentials,
+                now=manager.clock(),
+                offline_after_seconds=manager.settings.agent_offline_after_seconds,
+                agent_version=data.agent_version,
+            )
+        except AuthValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         if agent is None:
             raise HTTPException(status_code=401, detail="Credencial no válida.")
         return _agent_response(agent)
+
+    @router.get(
+        "/agent/config",
+        response_model=AgentConfigResponse,
+        tags=["agent-connectivity"],
+    )
+    def agent_config(
+        credentials: HTTPAuthorizationCredentials | None = Depends(  # noqa: B008
+            bearer_scheme
+        ),
+    ) -> AgentConfigResponse:
+        """Configuración solicitada para el agente dueño de la credencial.
+
+        Nunca contiene comandos, rutas ni secretos: solo revisión y modo.
+        """
+
+        config = manager.repository.get_agent_config_for_credential(
+            _agent_bearer(credentials)
+        )
+        if config is None:
+            raise HTTPException(status_code=401, detail="Credencial no válida.")
+        return AgentConfigResponse(
+            revision=int(config["revision"]),
+            response_mode=config["response_mode"],
+        )
+
+    @router.post(
+        "/agent/config/state",
+        response_model=AgentConfigStateResponse,
+        tags=["agent-connectivity"],
+    )
+    def agent_config_state(
+        data: AgentConfigStateRequest,
+        credentials: HTTPAuthorizationCredentials | None = Depends(  # noqa: B008
+            bearer_scheme
+        ),
+    ) -> AgentConfigStateResponse:
+        # La identidad sale exclusivamente de la credencial: el cuerpo no
+        # contiene agent_id, por lo que no se puede reportar por otro agente.
+        try:
+            updated = manager.repository.report_agent_config_state(
+                credential=_agent_bearer(credentials),
+                applied_revision=data.applied_revision,
+                effective_response_mode=data.effective_response_mode,
+                config_source=data.config_source,
+                blocking_enabled=data.blocking_enabled,
+                status=data.status,
+                reason=data.reason,
+                now=manager.clock(),
+            )
+        except AgentConfigStaleError:
+            return AgentConfigStateResponse(accepted=False, stale=True)
+        except AuthConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except AuthValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if updated is None:
+            raise HTTPException(status_code=401, detail="Credencial no válida.")
+        return AgentConfigStateResponse(accepted=True, stale=False)
 
     @router.get(
         "/agents",
@@ -217,6 +366,71 @@ def build_agent_router(manager: AuthManager) -> APIRouter:
         )
         if agent is None:
             raise HTTPException(status_code=404, detail="Servidor no encontrado.")
+        return _agent_response(agent)
+
+    @router.patch(
+        "/agents/{agent_id}",
+        response_model=AgentResponse,
+        tags=["agents"],
+    )
+    def update_agent_display_name(
+        agent_id: str,
+        data: AgentDisplayNameRequest,
+        request: Request,
+        session: AuthenticatedSession = Depends(  # noqa: B008
+            manager.require_superadmin
+        ),
+    ) -> AgentResponse:
+        # superadmin + CSRF + mismo origen, igual que las aprobaciones.
+        manager.verify_csrf(request, session)
+        try:
+            agent = manager.repository.set_agent_display_name(
+                agent_id,
+                display_name=data.display_name,
+                actor_user_id=session.user_id,
+                actor_username=session.username,
+                now=manager.clock(),
+                offline_after_seconds=manager.settings.agent_offline_after_seconds,
+            )
+        except AuthNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except AuthValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return _agent_response(agent)
+
+    @router.put(
+        "/agents/{agent_id}/response-mode",
+        response_model=AgentResponse,
+        tags=["agents"],
+    )
+    def update_agent_response_mode(
+        agent_id: str,
+        data: AgentResponseModeRequest,
+        request: Request,
+        session: AuthenticatedSession = Depends(  # noqa: B008
+            manager.require_superadmin
+        ),
+    ) -> AgentResponse:
+        # Solo se guarda la intención. El agente la obtiene por su canal
+        # autenticado; el central no usa SSH, no edita agent.env y no
+        # ejecuta comandos remotos.
+        manager.verify_csrf(request, session)
+        try:
+            agent = manager.repository.set_desired_response_mode(
+                agent_id,
+                response_mode=data.response_mode,
+                expected_revision=data.expected_revision,
+                actor_user_id=session.user_id,
+                actor_username=session.username,
+                now=manager.clock(),
+                offline_after_seconds=manager.settings.agent_offline_after_seconds,
+            )
+        except AuthNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except AuthConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except AuthValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         return _agent_response(agent)
 
     return router

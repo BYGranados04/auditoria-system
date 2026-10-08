@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from app.agent.heartbeat import AgentHeartbeatSender, AgentHeartbeatWorker
 from app.agent.registration import save_identity
 from app.agent.sync import SyncHttpResponse
+from app.agent.version import agent_version
 from app.api.main import create_app
 from app.auth.config import AuthSettings
 from app.auth.repository import AuthRepository
@@ -243,7 +244,10 @@ def test_heartbeat_sender_posts_periodically_with_metadata_only(tmp_path: Path) 
     assert result.sent is True
     assert result.next_delay_seconds == 30
     assert transport.calls[0]["url"] == "https://central.example/auditoria/agent/heartbeat"
-    assert transport.calls[0]["payload"] == {"hostname": "agent-host"}
+    assert transport.calls[0]["payload"] == {
+        "hostname": "agent-host",
+        "agent_version": agent_version(),
+    }
     assert transport.calls[0]["headers"] == {
         "Accept": "application/json",
         "Content-Type": "application/json",

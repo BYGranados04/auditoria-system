@@ -176,7 +176,7 @@ def test_migrates_v1_auth_database_without_losing_users_or_sessions(tmp_path) ->
     assert preserved_session is not None
     assert preserved_session.username == "legacy-admin"
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
         assert connection.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
         assert connection.execute(
@@ -243,7 +243,7 @@ def test_migrates_v2_legacy_host_access_without_using_it_for_ownership(
         legacy_hostnames = connection.execute(
             "SELECT hostname FROM user_host_access WHERE user_id = 1"
         ).fetchall()
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
 
     assert legacy_hostnames == [("legacy-host",)]
     assert {

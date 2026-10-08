@@ -7,6 +7,7 @@ import re
 import secrets
 import sqlite3
 import threading
+import unicodedata
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -19,6 +20,17 @@ USERNAME_PATTERN = re.compile(r"^[a-z0-9._-]{3,64}$")
 MINIMUM_PASSWORD_LENGTH = 8
 MAXIMUM_PASSWORD_BYTES = 1024
 
+ResponseMode = Literal["audit_only", "assisted", "automatic"]
+ConfigSource = Literal["local", "central"]
+RESPONSE_MODES: frozenset[str] = frozenset({"audit_only", "assisted", "automatic"})
+CONFIG_SOURCES: frozenset[str] = frozenset({"local", "central"})
+DISPLAY_NAME_MAX_LENGTH = 64
+AGENT_VERSION_PATTERN = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$")
+CONFIG_PROTOCOL_VERSION = 1
+ConfigStatus = Literal["pending", "applied", "rejected"]
+CONFIG_STATUS_REASON_MAX_LENGTH = 160
+DEFAULT_REJECTION_REASON = "El agente rechazó la configuración."
+
 
 class AuthValidationError(ValueError):
     pass
@@ -30,6 +42,10 @@ class AuthConflictError(RuntimeError):
 
 class AuthNotFoundError(LookupError):
     pass
+
+
+class AgentConfigStaleError(RuntimeError):
+    """Reporte de configuración anterior al último ya confirmado."""
 
 
 @dataclass(frozen=True)
@@ -115,6 +131,67 @@ def normalize_hostnames(
     return tuple(normalized)
 
 
+def normalize_display_name(value: str | None) -> str | None:
+    """Nombre visible asignado por un administrador.
+
+    Vacío equivale a NULL (el dashboard muestra el hostname). Se rechazan
+    caracteres Unicode de categoría C (control, formato, privados, no
+    asignados), lo que incluye overrides bidireccionales y saltos de línea.
+    """
+
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if len(normalized) > DISPLAY_NAME_MAX_LENGTH:
+        raise AuthValidationError(
+            f"El nombre debe tener como máximo {DISPLAY_NAME_MAX_LENGTH} caracteres."
+        )
+    if any(unicodedata.category(character).startswith("C") for character in normalized):
+        raise AuthValidationError(
+            "El nombre contiene caracteres de control o no permitidos."
+        )
+    return normalized
+
+
+def validate_response_mode(value: str) -> ResponseMode:
+    if value not in RESPONSE_MODES:
+        raise AuthValidationError("Modo de respuesta no válido.")
+    return value  # type: ignore[return-value]
+
+
+def sanitize_config_reason(value: str | None) -> str | None:
+    """Motivo corto y seguro para mostrar en el dashboard.
+
+    Elimina caracteres Unicode de categoría C (control, formato, etc.),
+    colapsa espacios y limita la longitud. Nunca debe contener trazas: el
+    agente solo envía mensajes fijos generados por Nexora.
+    """
+
+    if value is None:
+        return None
+    cleaned = "".join(
+        " " if unicodedata.category(character).startswith("C") else character
+        for character in value
+    )
+    normalized = " ".join(cleaned.split())
+    if not normalized:
+        return None
+    if len(normalized) > CONFIG_STATUS_REASON_MAX_LENGTH:
+        normalized = normalized[: CONFIG_STATUS_REASON_MAX_LENGTH - 1].rstrip() + "…"
+    return normalized
+
+
+def normalize_agent_version(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not AGENT_VERSION_PATTERN.fullmatch(normalized):
+        raise AuthValidationError("Versión de agente no válida.")
+    return normalized
+
+
 def _utc(value: datetime | None = None) -> datetime:
     current = value or datetime.now(UTC)
     if current.tzinfo is None or current.utcoffset() is None:
@@ -148,7 +225,7 @@ def _digest_token(token: str) -> bytes:
 
 
 class AuthRepository:
-    SCHEMA_VERSION = 3
+    SCHEMA_VERSION = 4
 
     def __init__(
         self,
@@ -193,6 +270,7 @@ class AuthRepository:
                     1: self._migrate_to_v1,
                     2: self._migrate_to_v2,
                     3: self._migrate_to_v3,
+                    4: self._migrate_to_v4,
                 }
                 while version < self.SCHEMA_VERSION:
                     next_version = version + 1
@@ -305,6 +383,87 @@ class AuthRepository:
 
             CREATE INDEX IF NOT EXISTS idx_agent_credentials_agent
                 ON agent_credentials (agent_id);
+            """
+        )
+
+    @staticmethod
+    def _migrate_to_v4(connection: sqlite3.Connection) -> None:
+        """Control plane v1.1: nombre visible, versión y configuración remota.
+
+        Solo agrega columnas y una tabla de historial. Cada columna se agrega
+        únicamente si no existe, por lo que un reintento tras una interrupción
+        no falla. No toca credenciales, tokens ni eventos.
+        """
+
+        modes = "('audit_only', 'assisted', 'automatic')"
+        columns = (
+            ("display_name", "TEXT"),
+            ("agent_version", "TEXT"),
+            ("config_protocol", "INTEGER"),
+            (
+                "desired_response_mode",
+                "TEXT CHECK (desired_response_mode IS NULL "
+                f"OR desired_response_mode IN {modes})",
+            ),
+            ("config_revision", "INTEGER NOT NULL DEFAULT 0"),
+            ("config_updated_at", "TEXT"),
+            ("applied_config_revision", "INTEGER NOT NULL DEFAULT 0"),
+            (
+                "effective_response_mode",
+                "TEXT CHECK (effective_response_mode IS NULL "
+                f"OR effective_response_mode IN {modes})",
+            ),
+            (
+                "config_source",
+                "TEXT CHECK (config_source IS NULL "
+                "OR config_source IN ('local', 'central'))",
+            ),
+            (
+                "blocking_enabled",
+                "INTEGER CHECK (blocking_enabled IS NULL "
+                "OR blocking_enabled IN (0, 1))",
+            ),
+            ("config_reported_at", "TEXT"),
+            # Último resultado de configuración central: NULL si nunca hubo
+            # una; pending al crear una revisión; applied o rejected según el
+            # reporte del agente para config_status_revision.
+            (
+                "config_status",
+                "TEXT CHECK (config_status IS NULL "
+                "OR config_status IN ('pending', 'applied', 'rejected'))",
+            ),
+            ("config_status_revision", "INTEGER"),
+            ("config_status_reason", "TEXT"),
+        )
+        existing = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(agents)").fetchall()
+        }
+        for name, definition in columns:
+            if name not in existing:
+                connection.execute(f"ALTER TABLE agents ADD COLUMN {name} {definition}")
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agent_config_changes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                -- Sin FK: el historial de auditoría sobrevive al agente.
+                agent_id TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                field TEXT NOT NULL
+                    CHECK (field IN ('display_name', 'response_mode')),
+                old_value TEXT,
+                new_value TEXT,
+                changed_by_user_id INTEGER,
+                changed_by_username TEXT NOT NULL,
+                changed_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_agent_config_changes_agent
+                ON agent_config_changes (agent_id, id)
             """
         )
 
@@ -731,6 +890,45 @@ class AuthRepository:
             ),
             "created_at": str(row["created_at"]),
             "updated_at": str(row["updated_at"]),
+            **AuthRepository._agent_control_fields(row),
+        }
+
+    @staticmethod
+    def _agent_control_fields(row: sqlite3.Row) -> dict[str, object]:
+        def optional_text(name: str) -> str | None:
+            value = row[name]
+            return str(value) if value is not None else None
+
+        config_revision = int(row["config_revision"])
+        applied_revision = int(row["applied_config_revision"])
+        desired = optional_text("desired_response_mode")
+        blocking = row["blocking_enabled"]
+        return {
+            "display_name": optional_text("display_name"),
+            "agent_version": optional_text("agent_version"),
+            "config_protocol": (
+                int(row["config_protocol"])
+                if row["config_protocol"] is not None
+                else None
+            ),
+            "desired_response_mode": desired,
+            "config_revision": config_revision,
+            "config_updated_at": optional_text("config_updated_at"),
+            "applied_config_revision": applied_revision,
+            "effective_response_mode": optional_text("effective_response_mode"),
+            "config_source": optional_text("config_source"),
+            "blocking_enabled": bool(blocking) if blocking is not None else None,
+            "config_reported_at": optional_text("config_reported_at"),
+            "config_status": optional_text("config_status"),
+            "config_status_revision": (
+                int(row["config_status_revision"])
+                if row["config_status_revision"] is not None
+                else None
+            ),
+            "config_status_reason": optional_text("config_status_reason"),
+            # Compatibilidad con la vista: pendiente solo si el último
+            # resultado es pending (un rechazo no queda pendiente).
+            "config_pending": row["config_status"] == "pending",
         }
 
     def create_agent_registration_token(
@@ -922,8 +1120,10 @@ class AuthRepository:
         credential: str,
         now: datetime | None = None,
         offline_after_seconds: int = 120,
+        agent_version: str | None = None,
     ) -> dict[str, object] | None:
         self.initialize()
+        normalized_version = normalize_agent_version(agent_version)
         current = _utc(now)
         timestamp = _timestamp(current)
         with self._connection() as connection:
@@ -945,10 +1145,12 @@ class AuthRepository:
             connection.execute(
                 """
                 UPDATE agents
-                SET last_seen_at = ?, updated_at = ?
+                SET last_seen_at = ?,
+                    updated_at = ?,
+                    agent_version = COALESCE(?, agent_version)
                 WHERE agent_id = ?
                 """,
-                (timestamp, timestamp, str(row["agent_id"])),
+                (timestamp, timestamp, normalized_version, str(row["agent_id"])),
             )
             updated = connection.execute(
                 "SELECT * FROM agents WHERE agent_id = ?", (str(row["agent_id"]),)
@@ -958,3 +1160,383 @@ class AuthRepository:
                 now=current,
                 offline_after_seconds=offline_after_seconds,
             )
+
+    # ------------------------------------------------------------------
+    # Control plane v1.1
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _insert_config_change(
+        connection: sqlite3.Connection,
+        *,
+        agent_id: str,
+        revision: int,
+        field: str,
+        old_value: str | None,
+        new_value: str | None,
+        user_id: int,
+        username: str,
+        changed_at: str,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO agent_config_changes (
+                agent_id, revision, field, old_value, new_value,
+                changed_by_user_id, changed_by_username, changed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                agent_id,
+                revision,
+                field,
+                old_value,
+                new_value,
+                user_id,
+                username,
+                changed_at,
+            ),
+        )
+
+    def set_agent_display_name(
+        self,
+        agent_id: str,
+        *,
+        display_name: str | None,
+        actor_user_id: int,
+        actor_username: str,
+        now: datetime | None = None,
+        offline_after_seconds: int = 120,
+    ) -> dict[str, object]:
+        self.initialize()
+        normalized = normalize_display_name(display_name)
+        current = _utc(now)
+        timestamp = _timestamp(current)
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM agents WHERE agent_id = ?", (agent_id,)
+            ).fetchone()
+            if row is None:
+                raise AuthNotFoundError("Servidor no encontrado.")
+            previous = row["display_name"]
+            if previous != normalized:
+                connection.execute(
+                    """
+                    UPDATE agents
+                    SET display_name = ?, updated_at = ?
+                    WHERE agent_id = ?
+                    """,
+                    (normalized, timestamp, agent_id),
+                )
+                self._insert_config_change(
+                    connection,
+                    agent_id=agent_id,
+                    revision=int(row["config_revision"]),
+                    field="display_name",
+                    old_value=previous,
+                    new_value=normalized,
+                    user_id=actor_user_id,
+                    username=actor_username,
+                    changed_at=timestamp,
+                )
+            updated = connection.execute(
+                "SELECT * FROM agents WHERE agent_id = ?", (agent_id,)
+            ).fetchone()
+            return self._public_agent(
+                updated,
+                now=current,
+                offline_after_seconds=offline_after_seconds,
+            )
+
+    def set_desired_response_mode(
+        self,
+        agent_id: str,
+        *,
+        response_mode: str,
+        expected_revision: int,
+        actor_user_id: int,
+        actor_username: str,
+        now: datetime | None = None,
+        offline_after_seconds: int = 120,
+    ) -> dict[str, object]:
+        """Modo deseado + revisión + historial en una sola transacción."""
+
+        self.initialize()
+        mode = validate_response_mode(response_mode)
+        current = _utc(now)
+        timestamp = _timestamp(current)
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM agents WHERE agent_id = ?", (agent_id,)
+            ).fetchone()
+            if row is None:
+                raise AuthNotFoundError("Servidor no encontrado.")
+            if row["config_protocol"] is None:
+                raise AuthConflictError(
+                    "El agente no admite configuración central "
+                    "(agente v1.0 o sin contacto de configuración)."
+                )
+            revision = int(row["config_revision"])
+            if expected_revision != revision:
+                raise AuthConflictError(
+                    "La configuración cambió; recargue el servidor "
+                    f"(revisión actual {revision})."
+                )
+            next_revision = revision + 1
+            connection.execute(
+                """
+                UPDATE agents
+                SET desired_response_mode = ?,
+                    config_revision = ?,
+                    config_updated_at = ?,
+                    config_status = 'pending',
+                    config_status_revision = ?,
+                    config_status_reason = NULL,
+                    updated_at = ?
+                WHERE agent_id = ? AND config_revision = ?
+                """,
+                (
+                    mode,
+                    next_revision,
+                    timestamp,
+                    next_revision,
+                    timestamp,
+                    agent_id,
+                    revision,
+                ),
+            )
+            self._insert_config_change(
+                connection,
+                agent_id=agent_id,
+                revision=next_revision,
+                field="response_mode",
+                old_value=row["desired_response_mode"],
+                new_value=mode,
+                user_id=actor_user_id,
+                username=actor_username,
+                changed_at=timestamp,
+            )
+            updated = connection.execute(
+                "SELECT * FROM agents WHERE agent_id = ?", (agent_id,)
+            ).fetchone()
+            return self._public_agent(
+                updated,
+                now=current,
+                offline_after_seconds=offline_after_seconds,
+            )
+
+    def list_agent_config_changes(
+        self,
+        agent_id: str,
+        *,
+        limit: int = 50,
+    ) -> list[dict[str, object]]:
+        self.initialize()
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM agent_config_changes
+                WHERE agent_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (agent_id, max(1, min(limit, 200))),
+            ).fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                "agent_id": str(row["agent_id"]),
+                "revision": int(row["revision"]),
+                "field": str(row["field"]),
+                "old_value": row["old_value"],
+                "new_value": row["new_value"],
+                "changed_by_user_id": row["changed_by_user_id"],
+                "changed_by_username": str(row["changed_by_username"]),
+                "changed_at": str(row["changed_at"]),
+            }
+            for row in rows
+        ]
+
+    def get_agent_config_for_credential(
+        self,
+        credential: str,
+    ) -> dict[str, object] | None:
+        """Configuración del agente autenticado y marca de protocolo.
+
+        Solo el agente dueño de la credencial obtiene su configuración. El
+        acceso registra ``config_protocol``: es la prueba de que el agente
+        entiende configuración central.
+        """
+
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = self._agent_row_for_credential(connection, credential)
+            if row is None:
+                return None
+            if row["config_protocol"] != CONFIG_PROTOCOL_VERSION:
+                connection.execute(
+                    "UPDATE agents SET config_protocol = ? WHERE agent_id = ?",
+                    (CONFIG_PROTOCOL_VERSION, str(row["agent_id"])),
+                )
+            return {
+                "agent_id": str(row["agent_id"]),
+                "revision": int(row["config_revision"]),
+                "response_mode": (
+                    str(row["desired_response_mode"])
+                    if row["desired_response_mode"] is not None
+                    else None
+                ),
+            }
+
+    def report_agent_config_state(
+        self,
+        *,
+        credential: str,
+        applied_revision: int,
+        effective_response_mode: str,
+        config_source: str,
+        blocking_enabled: bool,
+        status: Literal["applied", "rejected"],
+        reason: str | None = None,
+        now: datetime | None = None,
+    ) -> dict[str, object] | None:
+        """Registra el resultado de configuración que reporta el agente.
+
+        - revisión mayor que la solicitada: conflicto (409);
+        - revisión menor que el último resultado conocido (aplicado o
+          pendiente/rechazado): obsoleta, no pisa el estado más nuevo;
+        - ``applied``: exige que el modo efectivo coincida con el de esa
+          revisión; avanza ``applied_config_revision`` y deja ``applied``;
+        - ``rejected``: deja ``rejected`` con motivo saneado, sin tocar
+          ``applied_config_revision`` ni el modo efectivo anterior;
+        - ``applied`` con revisión 0: estado inicial del agente, sin
+          configuración central (``config_status`` no cambia).
+        """
+
+        self.initialize()
+        mode = validate_response_mode(effective_response_mode)
+        if config_source not in CONFIG_SOURCES:
+            raise AuthValidationError("Origen de configuración no válido.")
+        if status not in {"applied", "rejected"}:
+            raise AuthValidationError("Estado de configuración no válido.")
+        if applied_revision < 0:
+            raise AuthValidationError("Revisión no válida.")
+        timestamp = _timestamp(_utc(now))
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = self._agent_row_for_credential(connection, credential)
+            if row is None:
+                return None
+            agent_id = str(row["agent_id"])
+            if applied_revision > int(row["config_revision"]):
+                raise AuthConflictError(
+                    "La revisión reportada no existe en el central."
+                )
+            latest_known = max(
+                int(row["applied_config_revision"]),
+                int(row["config_status_revision"] or 0),
+            )
+            if applied_revision < latest_known:
+                raise AgentConfigStaleError(
+                    "La revisión reportada es anterior al último estado conocido."
+                )
+            if status == "rejected" and applied_revision == 0:
+                raise AuthConflictError(
+                    "No existe una revisión central que rechazar."
+                )
+            if status == "applied" and applied_revision > 0:
+                change = connection.execute(
+                    """
+                    SELECT new_value
+                    FROM agent_config_changes
+                    WHERE agent_id = ? AND field = 'response_mode'
+                      AND revision = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (agent_id, applied_revision),
+                ).fetchone()
+                if change is None or change["new_value"] != mode:
+                    raise AuthConflictError(
+                        "El modo efectivo no corresponde a la revisión reportada."
+                    )
+
+            if status == "rejected":
+                connection.execute(
+                    """
+                    UPDATE agents
+                    SET config_status = 'rejected',
+                        config_status_revision = ?,
+                        config_status_reason = ?,
+                        config_reported_at = ?
+                    WHERE agent_id = ?
+                    """,
+                    (
+                        applied_revision,
+                        sanitize_config_reason(reason) or DEFAULT_REJECTION_REASON,
+                        timestamp,
+                        agent_id,
+                    ),
+                )
+            elif applied_revision > 0:
+                connection.execute(
+                    """
+                    UPDATE agents
+                    SET applied_config_revision = ?,
+                        effective_response_mode = ?,
+                        config_source = ?,
+                        blocking_enabled = ?,
+                        config_status = 'applied',
+                        config_status_revision = ?,
+                        config_status_reason = NULL,
+                        config_reported_at = ?
+                    WHERE agent_id = ?
+                    """,
+                    (
+                        applied_revision,
+                        mode,
+                        config_source,
+                        int(blocking_enabled),
+                        applied_revision,
+                        timestamp,
+                        agent_id,
+                    ),
+                )
+            else:
+                # Revisión 0: solo el estado real del agente (arranque).
+                connection.execute(
+                    """
+                    UPDATE agents
+                    SET effective_response_mode = ?,
+                        config_source = ?,
+                        blocking_enabled = ?,
+                        config_reported_at = ?
+                    WHERE agent_id = ?
+                    """,
+                    (mode, config_source, int(blocking_enabled), timestamp, agent_id),
+                )
+            updated = connection.execute(
+                "SELECT * FROM agents WHERE agent_id = ?", (agent_id,)
+            ).fetchone()
+            return self._public_agent(updated)
+
+    @staticmethod
+    def _agent_row_for_credential(
+        connection: sqlite3.Connection,
+        credential: str,
+    ) -> sqlite3.Row | None:
+        return connection.execute(
+            """
+            SELECT agents.*
+            FROM agent_credentials
+            JOIN agents ON agents.agent_id = agent_credentials.agent_id
+            JOIN users ON users.id = agents.owner_user_id
+            WHERE agent_credentials.credential_digest = ?
+              AND agent_credentials.revoked_at IS NULL
+              AND users.active = 1
+            """,
+            (_digest_token(credential),),
+        ).fetchone()

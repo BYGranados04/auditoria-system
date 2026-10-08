@@ -326,7 +326,14 @@ def create_app(
             hostname=status_hostname,
             presence=(str(selected["presence"]) if selected is not None else None),
             last_seen_at=(selected["last_seen_at"] if selected is not None else None),
-            response_mode=None,
+            # Modo efectivo confirmado por el agente seleccionado. None si no
+            # hay un único servidor o si el agente (v1.0) nunca lo reportó.
+            response_mode=(
+                str(selected["effective_response_mode"])
+                if selected is not None
+                and selected["effective_response_mode"] is not None
+                else None
+            ),
             automatic_blocking_enabled=None,
             total_events=statistics["total"],
             live_response_blocks=None,
